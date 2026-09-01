@@ -1,0 +1,116 @@
+name: Debug build
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_smoke_test:
+        description: Run a short headless application smoke test
+        required: true
+        default: true
+        type: boolean
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: debug-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  BUILD_DIR: build-ci
+
+jobs:
+  linux-debug:
+    name: Ubuntu 22.04 / Qt 5 debug
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Qt and debug dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends             build-essential             file             fonts-noto-cjk             libqt5serialport5-dev             python3-serial             qt5-qmake             qtbase5-dev             qtchooser
+
+      - name: Record toolchain
+        run: |
+          mkdir -p "${BUILD_DIR}"
+          {
+            echo "runner: $(uname -a)"
+            echo "distribution: $(lsb_release -ds)"
+            qmake -v
+            g++ --version | head -n 1
+            python3 --version
+          } | tee "${BUILD_DIR}/debug-env.txt"
+
+      - name: Validate the Python Modbus tool
+        run: |
+          python3 -m py_compile rs485_modbus_debug.py
+          python3 rs485_modbus_debug.py ports
+
+      - name: Configure Debug build
+        working-directory: ${{ env.BUILD_DIR }}
+        run: |
+          qmake ../RS485Control.pro "CONFIG+=debug" "CONFIG-=release"
+          qmake -query
+
+      - name: Build
+        working-directory: ${{ env.BUILD_DIR }}
+        run: make -j"$(nproc)"
+
+      - name: Inspect executable
+        run: |
+          {
+            echo
+            echo "binary:"
+            file "${BUILD_DIR}/RS485Control"
+            echo
+            echo "dynamic dependencies:"
+            ldd "${BUILD_DIR}/RS485Control"
+          } | tee -a "${BUILD_DIR}/debug-env.txt"
+
+      - name: Headless startup smoke test
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_smoke_test }}
+        run: |
+          set +e
+          timeout --signal=TERM 8s             env QT_QPA_PLATFORM=offscreen             "${BUILD_DIR}/RS485Control"             >"${BUILD_DIR}/smoke.log" 2>&1
+          status=$?
+          set -e
+
+          cat "${BUILD_DIR}/smoke.log"
+          if [[ "${status}" -ne 0 && "${status}" -ne 124 ]]; then
+            echo "Application exited unexpectedly with status ${status}."
+            exit "${status}"
+          fi
+          echo "Application stayed alive for the smoke-test window."
+
+      - name: Prepare debug artifact
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p artifact/RS485Control-debug/config
+          if [[ -f "${BUILD_DIR}/RS485Control" ]]; then
+            install -m 0755 "${BUILD_DIR}/RS485Control"               artifact/RS485Control-debug/RS485Control
+          fi
+          if [[ -f "${BUILD_DIR}/debug-env.txt" ]]; then
+            cp "${BUILD_DIR}/debug-env.txt" artifact/RS485Control-debug/
+          fi
+          if [[ -f "${BUILD_DIR}/smoke.log" ]]; then
+            cp "${BUILD_DIR}/smoke.log" artifact/RS485Control-debug/
+          fi
+          cp config/app.ini artifact/RS485Control-debug/config/
+
+      - name: Upload debug binary and logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: RS485Control-debug-${{ github.sha }}
+          path: artifact/RS485Control-debug
+          if-no-files-found: error
+          retention-days: 14
