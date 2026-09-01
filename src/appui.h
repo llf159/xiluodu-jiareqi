@@ -2,10 +2,12 @@
 #define APPUI_H
 
 #include "applogic.h"
+#include "controlalgorithm.h"
 
 #include <QMainWindow>
 #include <QMap>
 #include <QPoint>
+#include <QSet>
 #include <QVector>
 #include <QWidget>
 
@@ -59,6 +61,7 @@ public:
 
     DeviceProfile::DeviceKey currentDevice() const;
     void setCurrentDevice(const DeviceProfile::DeviceKey &key);
+    void refreshSettings();
 
 signals:
     void writeRequested(const DeviceProfile::DeviceKey &key,
@@ -74,6 +77,7 @@ private:
     QLabel *m_operationBanner = nullptr;
     QPushButton *m_ot3 = nullptr;
     QPushButton *m_ot4 = nullptr;
+    QMap<QString, QPushButton *> m_spareOutputs;
 };
 
 /** 自动运行：状态监视、阈值摘要和启停。 */
@@ -158,6 +162,7 @@ public slots:
     void activate();
     void refreshDevices();
     void reloadDevices();
+    void onDataFilesChanged();
     void queryRecords();
     void onRecordAppended(const QDateTime &timestamp,
                           const DeviceProfile::DeviceKey &key,
@@ -195,23 +200,45 @@ class SettingsWidget : public QWidget
 {
     Q_OBJECT
 public:
-    explicit SettingsWidget(QWidget *parent = nullptr);
+    explicit SettingsWidget(StorageRotator *rotator, QWidget *parent = nullptr);
     void showActionFeedback(const QString &message, bool success);
+    void refreshStorageInfo();
 
 signals:
     void settingsSaved();
     void rescanRequested();
+    void dataFilesChanged();
 
 private slots:
     void saveSettings();
+    void deleteOldData();
 
 private:
+    StorageRotator *m_rotator = nullptr;
+    QComboBox *m_controlMode = nullptr;
     QDoubleSpinBox *m_targetTemp = nullptr;
     QDoubleSpinBox *m_lowerHysteresis = nullptr;
     QDoubleSpinBox *m_upperHysteresis = nullptr;
+    QDoubleSpinBox *m_pidKp = nullptr;
+    QDoubleSpinBox *m_pidKi = nullptr;
+    QDoubleSpinBox *m_pidKd = nullptr;
+    QDoubleSpinBox *m_pidSingleStage = nullptr;
+    QDoubleSpinBox *m_pidDualStage = nullptr;
     QDoubleSpinBox *m_highVoltageThreshold = nullptr;
+    QDoubleSpinBox *m_sensorTemperatureMin = nullptr;
+    QDoubleSpinBox *m_sensorTemperatureMax = nullptr;
+    QDoubleSpinBox *m_sensorHumidityMin = nullptr;
+    QDoubleSpinBox *m_sensorHumidityMax = nullptr;
+    QSpinBox *m_selfCheckGrace = nullptr;
+    QSpinBox *m_sensorRecoverySamples = nullptr;
     QSpinBox *m_relaySwitchInterval = nullptr;
     QSpinBox *m_recordInterval = nullptr;
+    QSpinBox *m_retentionDays = nullptr;
+    QSpinBox *m_maxStorageMB = nullptr;
+    QMap<int, QComboBox *> m_spareOutputModes;
+    QComboBox *m_reservedInputMode = nullptr;
+    QLabel *m_storageSummary = nullptr;
+    QDateEdit *m_deleteBeforeDate = nullptr;
     QLabel *m_formula = nullptr;
     QLabel *m_actionFeedback = nullptr;
     QTimer *m_feedbackTimer = nullptr;
@@ -245,6 +272,20 @@ private:
     void applyAutomaticControl(const DeviceProfile::DeviceKey &key);
     void enterHighVoltageAlarm();
     void leaveHighVoltageAlarm();
+    void evaluateSensorSelfCheck(const DeviceProfile::DeviceKey &key,
+                                 const DeviceState &state);
+    void enterSensorFault(const DeviceProfile::DeviceKey &key,
+                          const QString &reason);
+    void leaveSensorFault(const DeviceProfile::DeviceKey &key);
+    void stopAllControlledOutputs();
+    void initializeSafeOutputs(const DeviceProfile::DeviceKey &key);
+    void addConfiguredSpareOutputs(QMap<QString, QVariant> &fields,
+                                   bool initializeManual = false) const;
+    void evaluateReservedInput(const DeviceProfile::DeviceKey &key,
+                               const DeviceState &state);
+    void enterReservedInputInterlock(const DeviceProfile::DeviceKey &key,
+                                     int value);
+    void leaveReservedInputInterlock(const DeviceProfile::DeviceKey &key);
     void refreshSystemState();
 
     DeviceManager m_deviceManager;
@@ -267,8 +308,15 @@ private:
     bool m_highVoltageAlarm = false;
     bool m_schedulerFault = false;
     QString m_configError;
+    QDateTime m_startedAt;
     QMap<int, QPair<int, int>> m_lastAutoCommands;
     QMap<int, QDateTime> m_lastAutoCommandTimes;
+    QMap<int, ControlAlgorithm::PidState> m_pidStates;
+    QMap<int, QString> m_sensorFaults;
+    QMap<int, int> m_sensorRecoveryCounts;
+    QSet<int> m_sensorHealthyDevices;
+    QMap<int, QString> m_reservedInputInterlocks;
+    QSet<int> m_initializedDevices;
 };
 
 #endif // APPUI_H
