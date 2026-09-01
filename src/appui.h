@@ -230,6 +230,7 @@ private:
     QDoubleSpinBox *m_sensorHumidityMin = nullptr;
     QDoubleSpinBox *m_sensorHumidityMax = nullptr;
     QSpinBox *m_selfCheckGrace = nullptr;
+    QSpinBox *m_sensorRecoverySamples = nullptr;
     QSpinBox *m_relaySwitchInterval = nullptr;
     QSpinBox *m_recordInterval = nullptr;
     QSpinBox *m_retentionDays = nullptr;

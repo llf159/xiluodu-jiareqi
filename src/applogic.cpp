@@ -56,6 +56,8 @@ bool AppConfig::load(const QString &iniPath)
     m_general.pidDualStagePercent =
         ini.value("pidDualStagePercent", 60.0).toDouble();
     m_general.selfCheckGraceSec = ini.value("selfCheckGraceSec", 60).toInt();
+    m_general.sensorRecoverySamples =
+        ini.value("sensorRecoverySamples", 3).toInt();
     m_general.sensorTemperatureMin =
         ini.value("sensorTemperatureMin", -40.0).toDouble();
     m_general.sensorTemperatureMax =
@@ -92,6 +94,8 @@ bool AppConfig::load(const QString &iniPath)
                m_general.pidDualStagePercent, 100.0);
     m_general.selfCheckGraceSec =
         qBound(1, m_general.selfCheckGraceSec, 600);
+    m_general.sensorRecoverySamples =
+        qBound(1, m_general.sensorRecoverySamples, 20);
     if (m_general.sensorTemperatureMin >= m_general.sensorTemperatureMax)
         m_validationErrors.append(QString::fromUtf8("温度自检量程配置无效"));
     if (m_general.sensorHumidityMin >= m_general.sensorHumidityMax)
@@ -144,6 +148,7 @@ bool AppConfig::save(const QString &iniPath) const
     ini.setValue("pidSingleStagePercent", m_general.pidSingleStagePercent);
     ini.setValue("pidDualStagePercent", m_general.pidDualStagePercent);
     ini.setValue("selfCheckGraceSec", m_general.selfCheckGraceSec);
+    ini.setValue("sensorRecoverySamples", m_general.sensorRecoverySamples);
     ini.setValue("sensorTemperatureMin", m_general.sensorTemperatureMin);
     ini.setValue("sensorTemperatureMax", m_general.sensorTemperatureMax);
     ini.setValue("sensorHumidityMin", m_general.sensorHumidityMin);

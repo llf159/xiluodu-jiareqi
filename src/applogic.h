@@ -60,6 +60,7 @@ public:
         double pidSingleStagePercent = 10.0;
         double pidDualStagePercent = 60.0;
         int selfCheckGraceSec = 60;
+        int sensorRecoverySamples = 3;
         double sensorTemperatureMin = -40.0;
         double sensorTemperatureMax = 85.0;
         double sensorHumidityMin = 0.0;

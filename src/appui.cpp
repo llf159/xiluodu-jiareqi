@@ -1615,12 +1615,18 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     selfCheckLayout->addLayout(selfCheckGrid);
     auto *graceRow = new QHBoxLayout;
     graceRow->addWidget(new QLabel(QString::fromUtf8("上电自检等待时间"), selfCheckCard));
-    graceRow->addStretch();
     m_selfCheckGrace = new QSpinBox(selfCheckCard);
     m_selfCheckGrace->setRange(1, 600);
     m_selfCheckGrace->setSuffix(QString::fromUtf8(" 秒"));
     m_selfCheckGrace->setValue(config.selfCheckGraceSec);
     graceRow->addLayout(makeIntegerAdjustment(m_selfCheckGrace, selfCheckCard));
+    graceRow->addStretch();
+    graceRow->addWidget(new QLabel(QString::fromUtf8("恢复确认次数"), selfCheckCard));
+    m_sensorRecoverySamples = new QSpinBox(selfCheckCard);
+    m_sensorRecoverySamples->setRange(1, 20);
+    m_sensorRecoverySamples->setSuffix(QString::fromUtf8(" 次"));
+    m_sensorRecoverySamples->setValue(config.sensorRecoverySamples);
+    graceRow->addLayout(makeIntegerAdjustment(m_sensorRecoverySamples, selfCheckCard));
     selfCheckLayout->addLayout(graceRow);
     layout->addWidget(selfCheckCard);
 
@@ -1831,7 +1837,8 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
                 this, [clearFeedback](double) { clearFeedback(); });
     }
     for (QSpinBox *input : { m_recordInterval, m_relaySwitchInterval,
-                             m_selfCheckGrace, m_retentionDays, m_maxStorageMB }) {
+                             m_selfCheckGrace, m_sensorRecoverySamples,
+                             m_retentionDays, m_maxStorageMB }) {
         connect(input, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [clearFeedback](int) { clearFeedback(); });
     }
@@ -1887,6 +1894,7 @@ void SettingsWidget::saveSettings()
     config.general().sensorHumidityMin = humidityMin;
     config.general().sensorHumidityMax = humidityMax;
     config.general().selfCheckGraceSec = m_selfCheckGrace->value();
+    config.general().sensorRecoverySamples = m_sensorRecoverySamples->value();
     config.general().highVoltageThreshold = m_highVoltageThreshold->value();
     config.general().relaySwitchIntervalSec = m_relaySwitchInterval->value();
     config.general().recordIntervalSec = m_recordInterval->value();
@@ -2553,7 +2561,7 @@ void MainWindow::evaluateSensorSelfCheck(const DeviceProfile::DeviceKey &key,
         if (m_sensorFaults.contains(keyValue)) {
             const int validCount = m_sensorRecoveryCounts.value(keyValue) + 1;
             m_sensorRecoveryCounts[keyValue] = validCount;
-            if (validCount >= 3)
+            if (validCount >= AppConfig::instance().general().sensorRecoverySamples)
                 leaveSensorFault(key);
         } else {
             m_sensorRecoveryCounts.remove(keyValue);
@@ -2617,7 +2625,9 @@ void MainWindow::leaveSensorFault(const DeviceProfile::DeviceKey &key)
         m_scheduler->writeToDevice(key, fields);
     }
     m_statusBar->setText(QString::fromUtf8(
-        "ID %1 温湿度连续 3 次正常，自检告警已解除").arg(key.slaveId));
+        "ID %1 温湿度连续 %2 次正常，自检告警已解除")
+        .arg(key.slaveId)
+        .arg(AppConfig::instance().general().sensorRecoverySamples));
 }
 
 void MainWindow::evaluateReservedInput(const DeviceProfile::DeviceKey &key,
