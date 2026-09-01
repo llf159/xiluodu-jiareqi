@@ -22,11 +22,13 @@ DEFINES += QT_DEPRECATED_WARNINGS
 #   rs485device - RS485 与设备交互 (Modbus RTU / 串口线程)
 SOURCES += \
     src/main.cpp \
+    src/controlalgorithm.cpp \
     src/appui.cpp \
     src/applogic.cpp \
     src/rs485device.cpp
 
 HEADERS += \
+    src/controlalgorithm.h \
     src/appui.h \
     src/applogic.h \
     src/rs485device.h

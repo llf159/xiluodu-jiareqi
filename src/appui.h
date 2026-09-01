@@ -2,10 +2,12 @@
 #define APPUI_H
 
 #include "applogic.h"
+#include "controlalgorithm.h"
 
 #include <QMainWindow>
 #include <QMap>
 #include <QPoint>
+#include <QSet>
 #include <QVector>
 #include <QWidget>
 
@@ -158,6 +160,7 @@ public slots:
     void activate();
     void refreshDevices();
     void reloadDevices();
+    void onDataFilesChanged();
     void queryRecords();
     void onRecordAppended(const QDateTime &timestamp,
                           const DeviceProfile::DeviceKey &key,
@@ -195,23 +198,33 @@ class SettingsWidget : public QWidget
 {
     Q_OBJECT
 public:
-    explicit SettingsWidget(QWidget *parent = nullptr);
+    explicit SettingsWidget(StorageRotator *rotator, QWidget *parent = nullptr);
     void showActionFeedback(const QString &message, bool success);
+    void refreshStorageInfo();
 
 signals:
     void settingsSaved();
     void rescanRequested();
+    void dataFilesChanged();
 
 private slots:
     void saveSettings();
+    void deleteOldData();
 
 private:
+    StorageRotator *m_rotator = nullptr;
+    QComboBox *m_controlMode = nullptr;
     QDoubleSpinBox *m_targetTemp = nullptr;
     QDoubleSpinBox *m_lowerHysteresis = nullptr;
     QDoubleSpinBox *m_upperHysteresis = nullptr;
+    QDoubleSpinBox *m_pidKp = nullptr;
+    QDoubleSpinBox *m_pidKi = nullptr;
+    QDoubleSpinBox *m_pidKd = nullptr;
     QDoubleSpinBox *m_highVoltageThreshold = nullptr;
     QSpinBox *m_relaySwitchInterval = nullptr;
     QSpinBox *m_recordInterval = nullptr;
+    QLabel *m_storageSummary = nullptr;
+    QDateEdit *m_deleteBeforeDate = nullptr;
     QLabel *m_formula = nullptr;
     QLabel *m_actionFeedback = nullptr;
     QTimer *m_feedbackTimer = nullptr;
@@ -245,6 +258,13 @@ private:
     void applyAutomaticControl(const DeviceProfile::DeviceKey &key);
     void enterHighVoltageAlarm();
     void leaveHighVoltageAlarm();
+    void evaluateSensorSelfCheck(const DeviceProfile::DeviceKey &key,
+                                 const DeviceState &state);
+    void enterSensorFault(const DeviceProfile::DeviceKey &key,
+                          const QString &reason);
+    void leaveSensorFault(const DeviceProfile::DeviceKey &key);
+    void stopAllControlledOutputs();
+    void initializeSafeOutputs(const DeviceProfile::DeviceKey &key);
     void refreshSystemState();
 
     DeviceManager m_deviceManager;
@@ -267,8 +287,14 @@ private:
     bool m_highVoltageAlarm = false;
     bool m_schedulerFault = false;
     QString m_configError;
+    QDateTime m_startedAt;
     QMap<int, QPair<int, int>> m_lastAutoCommands;
     QMap<int, QDateTime> m_lastAutoCommandTimes;
+    QMap<int, ControlAlgorithm::PidState> m_pidStates;
+    QMap<int, QString> m_sensorFaults;
+    QMap<int, int> m_sensorRecoveryCounts;
+    QSet<int> m_sensorHealthyDevices;
+    QSet<int> m_initializedDevices;
 };
 
 #endif // APPUI_H

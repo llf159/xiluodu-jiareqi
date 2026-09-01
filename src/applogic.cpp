@@ -5,6 +5,7 @@
 // ============================================================
 
 #include "applogic.h"
+#include "controlalgorithm.h"
 #include <QSettings>
 #include <QFileInfo>
 #include <QDir>
@@ -12,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
+#include <QStorageInfo>
 #include <algorithm>
 
 // ============================================================
@@ -41,8 +43,49 @@ bool AppConfig::load(const QString &iniPath)
     m_general.modbusTimeoutMs = ini.value("modbusTimeoutMs", 500).toInt();
     m_general.interSlaveDelayMs = ini.value("interSlaveDelayMs", 50).toInt();
     m_general.temperatureTarget = ini.value("temperatureTarget", 25.0).toDouble();
+    m_general.temperatureControlMode =
+        ini.value("temperatureControlMode", "threshold").toString().toLower();
+    if (m_general.temperatureControlMode != "pid")
+        m_general.temperatureControlMode = "threshold";
     m_general.lowerHysteresis = ini.value("lowerHysteresis", 2.0).toDouble();
     m_general.upperHysteresis = ini.value("upperHysteresis", 2.0).toDouble();
+    m_general.pidKp = ini.value("pidKp", 12.0).toDouble();
+    m_general.pidKi = ini.value("pidKi", 0.15).toDouble();
+    m_general.pidKd = ini.value("pidKd", 0.0).toDouble();
+    m_general.pidSingleStagePercent =
+        ini.value("pidSingleStagePercent", 10.0).toDouble();
+    m_general.pidDualStagePercent =
+        ini.value("pidDualStagePercent", 60.0).toDouble();
+    m_general.selfCheckGraceSec = ini.value("selfCheckGraceSec", 60).toInt();
+    m_general.sensorTemperatureMin =
+        ini.value("sensorTemperatureMin", -40.0).toDouble();
+    m_general.sensorTemperatureMax =
+        ini.value("sensorTemperatureMax", 85.0).toDouble();
+    m_general.sensorHumidityMin =
+        ini.value("sensorHumidityMin", 0.0).toDouble();
+    m_general.sensorHumidityMax =
+        ini.value("sensorHumidityMax", 100.0).toDouble();
+    m_general.sensorTemperatureMaxDeviation =
+        ini.value("sensorTemperatureMaxDeviation", 15.0).toDouble();
+    m_general.sensorHumidityMaxDeviation =
+        ini.value("sensorHumidityMaxDeviation", 30.0).toDouble();
+    m_general.pidKp = qBound(0.0, m_general.pidKp, 100.0);
+    m_general.pidKi = qBound(0.0, m_general.pidKi, 10.0);
+    m_general.pidKd = qBound(0.0, m_general.pidKd, 100.0);
+    m_general.pidSingleStagePercent =
+        qBound(0.0, m_general.pidSingleStagePercent, 100.0);
+    m_general.pidDualStagePercent =
+        qBound(m_general.pidSingleStagePercent,
+               m_general.pidDualStagePercent, 100.0);
+    m_general.selfCheckGraceSec =
+        qBound(1, m_general.selfCheckGraceSec, 600);
+    if (m_general.sensorTemperatureMin >= m_general.sensorTemperatureMax)
+        m_validationErrors.append(QString::fromUtf8("温度自检量程配置无效"));
+    if (m_general.sensorHumidityMin >= m_general.sensorHumidityMax)
+        m_validationErrors.append(QString::fromUtf8("湿度自检量程配置无效"));
+    if (m_general.sensorTemperatureMaxDeviation <= 0.0
+        || m_general.sensorHumidityMaxDeviation <= 0.0)
+        m_validationErrors.append(QString::fromUtf8("传感器偏差阈值必须大于 0"));
     m_general.highVoltageThreshold = ini.value("highVoltageThreshold", 1.0).toDouble();
     m_general.relaySwitchIntervalSec = ini.value("relaySwitchIntervalSec", 10).toInt();
     m_general.recordIntervalSec = ini.value("recordIntervalSec", 1).toInt();
@@ -82,8 +125,23 @@ bool AppConfig::save(const QString &iniPath) const
     ini.setValue("modbusTimeoutMs", m_general.modbusTimeoutMs);
     ini.setValue("interSlaveDelayMs", m_general.interSlaveDelayMs);
     ini.setValue("temperatureTarget", m_general.temperatureTarget);
+    ini.setValue("temperatureControlMode", m_general.temperatureControlMode);
     ini.setValue("lowerHysteresis", m_general.lowerHysteresis);
     ini.setValue("upperHysteresis", m_general.upperHysteresis);
+    ini.setValue("pidKp", m_general.pidKp);
+    ini.setValue("pidKi", m_general.pidKi);
+    ini.setValue("pidKd", m_general.pidKd);
+    ini.setValue("pidSingleStagePercent", m_general.pidSingleStagePercent);
+    ini.setValue("pidDualStagePercent", m_general.pidDualStagePercent);
+    ini.setValue("selfCheckGraceSec", m_general.selfCheckGraceSec);
+    ini.setValue("sensorTemperatureMin", m_general.sensorTemperatureMin);
+    ini.setValue("sensorTemperatureMax", m_general.sensorTemperatureMax);
+    ini.setValue("sensorHumidityMin", m_general.sensorHumidityMin);
+    ini.setValue("sensorHumidityMax", m_general.sensorHumidityMax);
+    ini.setValue("sensorTemperatureMaxDeviation",
+                 m_general.sensorTemperatureMaxDeviation);
+    ini.setValue("sensorHumidityMaxDeviation",
+                 m_general.sensorHumidityMaxDeviation);
     ini.setValue("highVoltageThreshold", m_general.highVoltageThreshold);
     ini.setValue("relaySwitchIntervalSec", m_general.relaySwitchIntervalSec);
     ini.setValue("recordIntervalSec", m_general.recordIntervalSec);
@@ -234,7 +292,14 @@ void DataLogger::ensureHeader(QTextStream &out, const QString &filePath)
     if (f.exists() && f.size() > 0)
         return;
 
-    out << "timestamp,port,slave_id,device_name,device_type,data\n";
+    out << "timestamp,port,slave_id,device_name,device_type,"
+           "temperature_avg_c,humidity_avg_pct,"
+           "th1_temp_c,th1_humi_pct,th2_temp_c,th2_humi_pct,"
+           "th3_temp_c,th3_humi_pct,pt1_temp_c,pt2_temp_c,"
+           "hv_input,external_voltage_v,reserved_input,"
+           "ot01,ot02,ot03,ot04,ot05,ot06,ot07,ot08,ot09,ot10,"
+           "control_mode,target_temp_c,lower_hysteresis_c,upper_hysteresis_c,"
+           "pid_kp,pid_ki,pid_kd,sensor_quality,sensor_fault_reason,data_json\n";
 }
 
 void DataLogger::appendRecord(const DeviceProfile::DeviceKey &key,
@@ -247,6 +312,15 @@ void DataLogger::appendRecord(const DeviceProfile::DeviceKey &key,
         return;
 
     const QString filePath = csvFilePathForDate(QDate::currentDate());
+    bool legacySchema = false;
+    if (QFileInfo(filePath).size() > 0) {
+        QFile existing(filePath);
+        if (existing.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString header = QString::fromUtf8(existing.readLine()).trimmed();
+            legacySchema =
+                header == "timestamp,port,slave_id,device_name,device_type,data";
+        }
+    }
     QFile file(filePath);
     if (!file.open(QIODevice::Append | QIODevice::Text)) {
         emit logError(QString::fromUtf8("无法写入日志: %1").arg(filePath));
@@ -260,14 +334,78 @@ void DataLogger::appendRecord(const DeviceProfile::DeviceKey &key,
     for (auto it = values.constBegin(); it != values.constEnd(); ++it)
         json[it.key()] = QJsonValue::fromVariant(it.value());
 
+    auto engineering = [&values](const QString &field) {
+        return values.contains(field)
+            ? QString::number(values.value(field).toInt() / 10.0, 'f', 1)
+            : QString();
+    };
+    auto raw = [&values](const QString &field) {
+        return values.contains(field) ? values.value(field).toString() : QString();
+    };
+    auto average = [&values](const QStringList &fields) {
+        double sum = 0.0;
+        int count = 0;
+        for (const QString &field : fields) {
+            if (!values.contains(field))
+                continue;
+            sum += values.value(field).toInt() / 10.0;
+            ++count;
+        }
+        return count > 0 ? QString::number(sum / count, 'f', 1) : QString();
+    };
+
+    const AppConfig::GeneralConfig &config = AppConfig::instance().general();
+    ControlAlgorithm::SensorLimits limits;
+    limits.temperatureMin = config.sensorTemperatureMin;
+    limits.temperatureMax = config.sensorTemperatureMax;
+    limits.humidityMin = config.sensorHumidityMin;
+    limits.humidityMax = config.sensorHumidityMax;
+    limits.temperatureMaxDeviation = config.sensorTemperatureMaxDeviation;
+    limits.humidityMaxDeviation = config.sensorHumidityMaxDeviation;
+    const ControlAlgorithm::SensorCheck health =
+        ControlAlgorithm::checkTemperatureHumidity(values, limits, true);
+    const QString quality = health.state == ControlAlgorithm::SensorCheck::Healthy
+        ? "ok" : health.state == ControlAlgorithm::SensorCheck::Waiting ? "waiting" : "fault";
+
     const QDateTime timestamp = QDateTime::currentDateTime();
-    const QString line = QString("%1,%2,%3,%4,%5,%6\n")
-        .arg(timestamp.toString("yyyy-MM-dd hh:mm:ss"))
-        .arg(key.portIndex)
-        .arg(key.slaveId)
-        .arg(deviceName)
-        .arg(DeviceProfile::deviceTypeToString(type))
-        .arg(QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
+    QStringList columns;
+    columns << timestamp.toString(Qt::ISODateWithMs)
+            << QString::number(key.portIndex)
+            << QString::number(key.slaveId)
+            << deviceName
+            << DeviceProfile::deviceTypeToString(type)
+            << average({ "th1_temp", "th2_temp", "th3_temp" })
+            << average({ "th1_humi", "th2_humi", "th3_humi" })
+            << engineering("th1_temp") << engineering("th1_humi")
+            << engineering("th2_temp") << engineering("th2_humi")
+            << engineering("th3_temp") << engineering("th3_humi")
+            << engineering("pt1_temp") << engineering("pt2_temp")
+            << raw("hv_input") << engineering("external_voltage") << raw("reserved");
+    for (int i = 1; i <= 10; ++i)
+        columns << raw(QString("ot%1").arg(i, 2, 10, QChar('0')));
+    columns << config.temperatureControlMode
+            << QString::number(config.temperatureTarget, 'f', 1)
+            << QString::number(config.lowerHysteresis, 'f', 1)
+            << QString::number(config.upperHysteresis, 'f', 1)
+            << QString::number(config.pidKp, 'f', 2)
+            << QString::number(config.pidKi, 'f', 2)
+            << QString::number(config.pidKd, 'f', 2)
+            << quality
+            << health.message;
+    QString line;
+    const QString jsonText =
+        QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact));
+    if (legacySchema) {
+        line = QString("%1,%2,%3,%4,%5,%6\n")
+            .arg(timestamp.toString("yyyy-MM-dd hh:mm:ss"))
+            .arg(key.portIndex)
+            .arg(key.slaveId)
+            .arg(deviceName)
+            .arg(DeviceProfile::deviceTypeToString(type))
+            .arg(jsonText);
+    } else {
+        line = columns.join(',') + ',' + jsonText + '\n';
+    }
 
     out << line;
     file.close();
@@ -348,29 +486,40 @@ QVector<HistoryQuery::Record> HistoryQuery::parseFile(const QString &filePath,
     if (in.atEnd())
         return results;
 
-    in.readLine(); // skip header
+    const QString header = in.readLine();
+    const QStringList headerFields = header.split(',');
+    int dataColumn = headerFields.indexOf("data_json");
+    if (dataColumn < 0)
+        dataColumn = headerFields.indexOf("data");
+    if (dataColumn < 5)
+        return results;
 
     while (!in.atEnd()) {
         const QString line = in.readLine().trimmed();
         if (line.isEmpty())
             continue;
 
-        // CSV: 前 5 列固定，data 列可能含逗号 (JSON 通常无逗号空格)
-        const int p1 = line.indexOf(',');
-        const int p2 = line.indexOf(',', p1 + 1);
-        const int p3 = line.indexOf(',', p2 + 1);
-        const int p4 = line.indexOf(',', p3 + 1);
-        const int p5 = line.indexOf(',', p4 + 1);
-        if (p5 < 0)
+        QStringList fixed;
+        int fieldStart = 0;
+        int comma = -1;
+        for (int i = 0; i < dataColumn; ++i) {
+            comma = line.indexOf(',', fieldStart);
+            if (comma < 0)
+                break;
+            fixed.append(line.mid(fieldStart, comma - fieldStart));
+            fieldStart = comma + 1;
+        }
+        if (fixed.size() != dataColumn)
             continue;
 
         Record rec;
-        rec.timestamp = QDateTime::fromString(line.left(p1), "yyyy-MM-dd hh:mm:ss");
-        rec.portIndex = line.mid(p1 + 1, p2 - p1 - 1).toInt();
-        rec.slaveId = line.mid(p2 + 1, p3 - p2 - 1).toInt();
-        rec.deviceName = line.mid(p3 + 1, p4 - p3 - 1);
-        rec.deviceType = DeviceProfile::deviceTypeFromString(
-            line.mid(p4 + 1, p5 - p4 - 1));
+        rec.timestamp = QDateTime::fromString(fixed.at(0), Qt::ISODateWithMs);
+        if (!rec.timestamp.isValid())
+            rec.timestamp = QDateTime::fromString(fixed.at(0), "yyyy-MM-dd hh:mm:ss");
+        rec.portIndex = fixed.at(1).toInt();
+        rec.slaveId = fixed.at(2).toInt();
+        rec.deviceName = fixed.at(3);
+        rec.deviceType = DeviceProfile::deviceTypeFromString(fixed.at(4));
 
         if (filter.portIndex >= 0 && rec.portIndex != filter.portIndex)
             continue;
@@ -380,7 +529,7 @@ QVector<HistoryQuery::Record> HistoryQuery::parseFile(const QString &filePath,
             && DeviceProfile::deviceTypeToString(rec.deviceType) != filter.deviceType)
             continue;
 
-        const QString jsonStr = line.mid(p5 + 1);
+        const QString jsonStr = line.mid(fieldStart);
         const QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8());
         if (doc.isObject()) {
             const QJsonObject obj = doc.object();
@@ -430,6 +579,88 @@ void StorageRotator::stop()
     m_timer->stop();
 }
 
+StorageRotator::StorageStatus StorageRotator::storageStatus() const
+{
+    StorageStatus status;
+    if (m_dataPath.isEmpty()) {
+        status.error = QString::fromUtf8("未配置数据目录");
+        return status;
+    }
+
+    QDir().mkpath(m_dataPath);
+    QStorageInfo storage(m_dataPath);
+    storage.refresh();
+    if (!storage.isValid() || !storage.isReady()) {
+        status.error = QString::fromUtf8("存储设备不可用");
+        return status;
+    }
+    status.ready = true;
+    status.bytesTotal = storage.bytesTotal();
+    status.bytesAvailable = storage.bytesAvailable();
+    const QFileInfoList files = QDir(m_dataPath).entryInfoList(
+        QStringList() << "*.csv", QDir::Files, QDir::Name);
+    status.fileCount = files.size();
+    for (const QFileInfo &file : files) {
+        status.logBytes += file.size();
+        const QDate date = QDate::fromString(file.baseName(), "yyyy-MM-dd");
+        if (!date.isValid())
+            continue;
+        if (!status.oldestDate.isValid() || date < status.oldestDate)
+            status.oldestDate = date;
+        if (!status.newestDate.isValid() || date > status.newestDate)
+            status.newestDate = date;
+    }
+    return status;
+}
+
+StorageRotator::DeleteResult StorageRotator::previewDeleteBefore(
+    const QDate &cutoff) const
+{
+    DeleteResult result;
+    if (m_dataPath.isEmpty() || !cutoff.isValid()) {
+        result.error = QString::fromUtf8("删除日期或数据目录无效");
+        return result;
+    }
+    result.valid = true;
+    const QFileInfoList files = QDir(m_dataPath).entryInfoList(
+        QStringList() << "*.csv", QDir::Files, QDir::Name);
+    for (const QFileInfo &file : files) {
+        const QDate date = QDate::fromString(file.baseName(), "yyyy-MM-dd");
+        if (date.isValid() && date < cutoff) {
+            ++result.files;
+            result.bytes += file.size();
+        }
+    }
+    return result;
+}
+
+StorageRotator::DeleteResult StorageRotator::deleteBefore(const QDate &cutoff)
+{
+    DeleteResult result = previewDeleteBefore(cutoff);
+    if (!result.valid)
+        return result;
+    result.files = 0;
+    result.bytes = 0;
+    const QFileInfoList files = QDir(m_dataPath).entryInfoList(
+        QStringList() << "*.csv", QDir::Files, QDir::Name);
+    for (const QFileInfo &file : files) {
+        const QDate date = QDate::fromString(file.baseName(), "yyyy-MM-dd");
+        if (!date.isValid() || date >= cutoff)
+            continue;
+        const qint64 size = file.size();
+        if (QFile::remove(file.absoluteFilePath())) {
+            ++result.files;
+            result.bytes += size;
+        } else {
+            result.valid = false;
+            result.error = QString::fromUtf8("部分文件删除失败：%1").arg(file.fileName());
+        }
+    }
+    if (result.files > 0)
+        emit cleanupDone(result.files, result.bytes);
+    return result;
+}
+
 void StorageRotator::runCleanup()
 {
     if (m_dataPath.isEmpty())
@@ -448,9 +679,11 @@ void StorageRotator::runCleanup()
         const QDate fileDate = QDate::fromString(
             fi.baseName(), "yyyy-MM-dd");
         if (fileDate.isValid() && fileDate < cutoff) {
-            freed += fi.size();
-            QFile::remove(fi.absoluteFilePath());
-            ++removed;
+            const qint64 size = fi.size();
+            if (QFile::remove(fi.absoluteFilePath())) {
+                freed += size;
+                ++removed;
+            }
         }
     }
 
@@ -467,10 +700,12 @@ void StorageRotator::runCleanup()
         for (const QFileInfo &fi : remaining) {
             if (total <= maxBytes)
                 break;
-            total -= fi.size();
-            freed += fi.size();
-            QFile::remove(fi.absoluteFilePath());
-            ++removed;
+            const qint64 size = fi.size();
+            if (QFile::remove(fi.absoluteFilePath())) {
+                total -= size;
+                freed += size;
+                ++removed;
+            }
         }
     }
 

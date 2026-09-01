@@ -51,8 +51,21 @@ public:
         int modbusTimeoutMs = 500;
         int interSlaveDelayMs = 50;
         double temperatureTarget = 25.0;
+        QString temperatureControlMode = "threshold";
         double lowerHysteresis = 2.0;
         double upperHysteresis = 2.0;
+        double pidKp = 12.0;
+        double pidKi = 0.15;
+        double pidKd = 0.0;
+        double pidSingleStagePercent = 10.0;
+        double pidDualStagePercent = 60.0;
+        int selfCheckGraceSec = 60;
+        double sensorTemperatureMin = -40.0;
+        double sensorTemperatureMax = 85.0;
+        double sensorHumidityMin = 0.0;
+        double sensorHumidityMax = 100.0;
+        double sensorTemperatureMaxDeviation = 15.0;
+        double sensorHumidityMaxDeviation = 30.0;
         double highVoltageThreshold = 1.0;
         int relaySwitchIntervalSec = 10;
         int recordIntervalSec = 1;
@@ -131,7 +144,7 @@ private:
  * @brief 数据存储: 按日期分文件的 CSV
  *
  * 文件格式: logs/YYYY-MM-DD.csv
- * 列: timestamp, port, slave_id, device_name, device_type, data_json
+ * 前五列保持兼容，后续为常用工程量、控制参数和完整 data_json
  *
  * 不使用数据库，RK3568 内存友好；data_json 为紧凑 key:value 序列
  */
@@ -219,6 +232,24 @@ class StorageRotator : public QObject
 {
     Q_OBJECT
 public:
+    struct StorageStatus {
+        bool ready = false;
+        qint64 bytesTotal = 0;
+        qint64 bytesAvailable = 0;
+        qint64 logBytes = 0;
+        int fileCount = 0;
+        QDate oldestDate;
+        QDate newestDate;
+        QString error;
+    };
+
+    struct DeleteResult {
+        bool valid = false;
+        int files = 0;
+        qint64 bytes = 0;
+        QString error;
+    };
+
     explicit StorageRotator(QObject *parent = nullptr);
 
     void setDataPath(const QString &path);
@@ -227,6 +258,9 @@ public:
 
     void start(int checkIntervalMs = 3600000);
     void stop();
+    StorageStatus storageStatus() const;
+    DeleteResult previewDeleteBefore(const QDate &cutoff) const;
+    DeleteResult deleteBefore(const QDate &cutoff);
 
 public slots:
     void runCleanup();

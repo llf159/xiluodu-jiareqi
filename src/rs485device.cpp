@@ -144,7 +144,7 @@ QString DeviceProfile::fieldDisplayName(const QString &field)
 {
     static const QMap<QString, QString> names = {
         { "hv_input",      QString::fromUtf8("高压通电输入状态") },
-        { "reserved",      QString::fromUtf8("备用") },
+        { "reserved",      QString::fromUtf8("备用输入（仅监视）") },
         { "external_voltage", QString::fromUtf8("外部电压采样输入值") },
         { "pt1_temp",      QString::fromUtf8("PT100-1 温度") },
         { "pt2_temp",      QString::fromUtf8("PT100-2 温度") },
