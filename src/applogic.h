@@ -64,8 +64,11 @@ public:
         double sensorTemperatureMax = 85.0;
         double sensorHumidityMin = 0.0;
         double sensorHumidityMax = 100.0;
-        double sensorTemperatureMaxDeviation = 15.0;
-        double sensorHumidityMaxDeviation = 30.0;
+        QString spareOt01Mode = "off";
+        QString spareOt02Mode = "off";
+        QString spareOt05Mode = "off";
+        QString spareOt06Mode = "off";
+        QString reservedInputMode = "monitor";
         double highVoltageThreshold = 1.0;
         int relaySwitchIntervalSec = 10;
         int recordIntervalSec = 1;
@@ -144,9 +147,8 @@ private:
  * @brief 数据存储: 按日期分文件的 CSV
  *
  * 文件格式: logs/YYYY-MM-DD.csv
- * 前五列保持兼容，后续为常用工程量、控制参数和完整 data_json
- *
- * 不使用数据库，RK3568 内存友好；data_json 为紧凑 key:value 序列
+ * 新文件只保留设备身份、必要测量值、备用输入和 OT1～OT6 状态。
+ * 不使用数据库，保持 RK3568 上的低内存占用。
  */
 class DataLogger : public QObject
 {

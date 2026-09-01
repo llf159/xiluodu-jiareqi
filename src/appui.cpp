@@ -169,6 +169,28 @@ int commandKey(const DeviceProfile::DeviceKey &key)
     return key.portIndex * 256 + key.slaveId;
 }
 
+QString spareOutputMode(const AppConfig::GeneralConfig &config, int output)
+{
+    switch (output) {
+    case 1: return config.spareOt01Mode;
+    case 2: return config.spareOt02Mode;
+    case 5: return config.spareOt05Mode;
+    case 6: return config.spareOt06Mode;
+    default: return "off";
+    }
+}
+
+QString spareModeDisplayName(const QString &mode)
+{
+    if (mode == "manual")
+        return QString::fromUtf8("手动");
+    if (mode == "auto")
+        return QString::fromUtf8("跟随自动");
+    if (mode == "alarm")
+        return QString::fromUtf8("跟随报警");
+    return QString::fromUtf8("关闭");
+}
+
 QString formatBytes(qint64 bytes)
 {
     const char *units[] = { "B", "KB", "MB", "GB", "TB" };
@@ -191,8 +213,6 @@ ControlAlgorithm::SensorLimits configuredSensorLimits()
     limits.temperatureMax = config.sensorTemperatureMax;
     limits.humidityMin = config.sensorHumidityMin;
     limits.humidityMax = config.sensorHumidityMax;
-    limits.temperatureMaxDeviation = config.sensorTemperatureMaxDeviation;
-    limits.humidityMaxDeviation = config.sensorHumidityMaxDeviation;
     return limits;
 }
 
@@ -411,6 +431,27 @@ ManualPanel::ManualPanel(DeviceManager *manager, QWidget *parent)
         controls->addWidget(button);
         connect(button, &QPushButton::clicked, this, &ManualPanel::toggleOutput);
     }
+    m_ot3->setProperty("outputField", "ot03");
+    m_ot4->setProperty("outputField", "ot04");
+
+    auto *spareTitle = new QLabel(QString::fromUtf8("备用输出"), controlCard);
+    spareTitle->setObjectName("metricTitle");
+    controls->addWidget(spareTitle);
+    auto *spareGrid = new QGridLayout;
+    const QList<int> spareNumbers = { 1, 2, 5, 6 };
+    for (int i = 0; i < spareNumbers.size(); ++i) {
+        const int output = spareNumbers.at(i);
+        const QString field = QString("ot%1").arg(output, 2, 10, QChar('0'));
+        auto *button = new QPushButton(controlCard);
+        button->setObjectName("outputButton");
+        button->setCheckable(true);
+        button->setMinimumHeight(52);
+        button->setProperty("outputField", field);
+        m_spareOutputs[field] = button;
+        spareGrid->addWidget(button, i / 2, i % 2);
+        connect(button, &QPushButton::clicked, this, &ManualPanel::toggleOutput);
+    }
+    controls->addLayout(spareGrid);
 
     controls->addStretch();
     layout->addWidget(controlCard, 3);
@@ -433,6 +474,11 @@ DeviceProfile::DeviceKey ManualPanel::currentDevice() const
 void ManualPanel::setCurrentDevice(const DeviceProfile::DeviceKey &key)
 {
     m_overview->selectDevice(key);
+}
+
+void ManualPanel::refreshSettings()
+{
+    refreshControls();
 }
 
 void ManualPanel::refreshControls()
@@ -465,29 +511,56 @@ void ManualPanel::refreshControls()
         entry.first->blockSignals(false);
         refreshDynamicStyle(entry.first);
     }
+
+    const AppConfig::GeneralConfig &config = AppConfig::instance().general();
+    for (auto it = m_spareOutputs.begin(); it != m_spareOutputs.end(); ++it) {
+        const int output = it.key().mid(2).toInt();
+        const QString mode = spareOutputMode(config, output);
+        const int value = state.values.value(it.key()).toInt();
+        QPushButton *button = it.value();
+        button->blockSignals(true);
+        button->setChecked(value != 0);
+        button->setEnabled(state.online && mode == "manual");
+        button->setProperty("outputOn", value != 0);
+        button->setText(QString::fromUtf8("OT%1  %2\n%3")
+                            .arg(output)
+                            .arg(spareModeDisplayName(mode))
+                            .arg(value ? QString::fromUtf8("已打开")
+                                       : QString::fromUtf8("已关闭")));
+        button->blockSignals(false);
+        refreshDynamicStyle(button);
+    }
 }
 
 void ManualPanel::toggleOutput()
 {
     const DeviceState state = m_overview->currentState();
-    if (!state.online || !state.values.contains("external_voltage")
-        || hasHighVoltage(state.values)) {
-        refreshControls();
-        return;
-    }
-
     auto *button = qobject_cast<QPushButton *>(sender());
     if (!button)
         return;
+    const QString field = button->property("outputField").toString();
+    const bool controlledOutput = field == "ot03" || field == "ot04";
+    if (!state.online
+        || (controlledOutput
+            && (!state.values.contains("external_voltage")
+                || hasHighVoltage(state.values)))) {
+        refreshControls();
+        return;
+    }
+    if (!controlledOutput) {
+        const int output = field.mid(2).toInt();
+        if (spareOutputMode(AppConfig::instance().general(), output) != "manual") {
+            refreshControls();
+            return;
+        }
+    }
     QMap<QString, QVariant> fields;
-    fields[button == m_ot3 ? "ot03" : "ot04"] = button->isChecked() ? 1 : 0;
+    fields[field] = button->isChecked() ? 1 : 0;
     emit writeRequested(currentDevice(), fields);
     button->setProperty("outputOn", button->isChecked());
-    button->setText(QString::fromUtf8("%1  %2\n%3")
-                        .arg(button == m_ot3 ? "OT3" : "OT4",
-                             button == m_ot3 ? QString::fromUtf8("回路一")
-                                             : QString::fromUtf8("回路二"),
-                             button->isChecked() ? QString::fromUtf8("正在打开…")
+    button->setText(QString::fromUtf8("%1\n%2")
+                        .arg(field.toUpper())
+                        .arg(button->isChecked() ? QString::fromUtf8("正在打开…")
                                                  : QString::fromUtf8("正在关闭…")));
     refreshDynamicStyle(button);
 }
@@ -1391,13 +1464,16 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
         QString::fromUtf8("外部高压触发阈值"),
         QString::fromUtf8("PID 比例 Kp"),
         QString::fromUtf8("PID 积分 Ki"),
-        QString::fromUtf8("PID 微分 Kd")
+        QString::fromUtf8("PID 微分 Kd"),
+        QString::fromUtf8("PID 一级输出点"),
+        QString::fromUtf8("PID 二级输出点")
     };
     const AppConfig::GeneralConfig &config = AppConfig::instance().general();
     const QList<double> values = {
         config.temperatureTarget, config.lowerHysteresis,
         config.upperHysteresis, config.highVoltageThreshold,
-        config.pidKp, config.pidKi, config.pidKd
+        config.pidKp, config.pidKi, config.pidKd,
+        config.pidSingleStagePercent, config.pidDualStagePercent
     };
     QList<QDoubleSpinBox *> inputs;
     for (int i = 0; i < labels.size(); ++i) {
@@ -1423,7 +1499,9 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
             input->setRange(0.0, 100.0);
             input->setSingleStep(0.5);
         }
-        input->setDecimals(i >= 4 ? 2 : 1);
+        input->setDecimals(i >= 4 && i <= 6 ? 2 : 1);
+        if (i >= 7)
+            input->setSuffix(" %");
         input->setValue(values.at(i));
         input->setButtonSymbols(QAbstractSpinBox::NoButtons);
         input->setAlignment(Qt::AlignCenter);
@@ -1458,6 +1536,8 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     m_pidKp = inputs.at(4);
     m_pidKi = inputs.at(5);
     m_pidKd = inputs.at(6);
+    m_pidSingleStage = inputs.at(7);
+    m_pidDualStage = inputs.at(8);
     const int modeIndex = m_controlMode->findData(config.temperatureControlMode);
     m_controlMode->setCurrentIndex(modeIndex >= 0 ? modeIndex : 0);
     temperatureLayout->addLayout(parameterGrid);
@@ -1491,6 +1571,59 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
         return adjustment;
     };
 
+    auto *selfCheckCard = makeCard(this);
+    auto *selfCheckLayout = new QVBoxLayout(selfCheckCard);
+    selfCheckLayout->setContentsMargins(16, 10, 16, 10);
+    selfCheckLayout->setSpacing(8);
+    auto *selfCheckTitle = new QLabel(QString::fromUtf8("温湿度自检"), selfCheckCard);
+    selfCheckTitle->setObjectName("sectionTitle");
+    selfCheckLayout->addWidget(selfCheckTitle);
+    auto *selfCheckHint = new QLabel(QString::fromUtf8(
+        "三路测点允许温差/湿差；仅对断线、缺失和超出绝对量程报错"), selfCheckCard);
+    selfCheckHint->setObjectName("mutedText");
+    selfCheckLayout->addWidget(selfCheckHint);
+    auto *selfCheckGrid = new QGridLayout;
+    const QStringList selfCheckLabels = {
+        QString::fromUtf8("温度最小值"), QString::fromUtf8("温度最大值"),
+        QString::fromUtf8("湿度最小值"), QString::fromUtf8("湿度最大值")
+    };
+    const QList<double> selfCheckValues = {
+        config.sensorTemperatureMin, config.sensorTemperatureMax,
+        config.sensorHumidityMin, config.sensorHumidityMax
+    };
+    QList<QDoubleSpinBox *> selfCheckInputs;
+    for (int i = 0; i < selfCheckLabels.size(); ++i) {
+        auto *label = new QLabel(selfCheckLabels.at(i), selfCheckCard);
+        label->setObjectName("metricTitle");
+        auto *input = new QDoubleSpinBox(selfCheckCard);
+        input->setRange(i < 2 ? -100.0 : 0.0, i < 2 ? 200.0 : 100.0);
+        input->setSuffix(i < 2 ? " ℃" : " %RH");
+        input->setDecimals(1);
+        input->setSingleStep(0.5);
+        input->setValue(selfCheckValues.at(i));
+        input->setMinimumHeight(44);
+        input->setAlignment(Qt::AlignCenter);
+        selfCheckGrid->addWidget(label, 0, i);
+        selfCheckGrid->addWidget(input, 1, i);
+        selfCheckGrid->setColumnStretch(i, 1);
+        selfCheckInputs.append(input);
+    }
+    m_sensorTemperatureMin = selfCheckInputs.at(0);
+    m_sensorTemperatureMax = selfCheckInputs.at(1);
+    m_sensorHumidityMin = selfCheckInputs.at(2);
+    m_sensorHumidityMax = selfCheckInputs.at(3);
+    selfCheckLayout->addLayout(selfCheckGrid);
+    auto *graceRow = new QHBoxLayout;
+    graceRow->addWidget(new QLabel(QString::fromUtf8("上电自检等待时间"), selfCheckCard));
+    graceRow->addStretch();
+    m_selfCheckGrace = new QSpinBox(selfCheckCard);
+    m_selfCheckGrace->setRange(1, 600);
+    m_selfCheckGrace->setSuffix(QString::fromUtf8(" 秒"));
+    m_selfCheckGrace->setValue(config.selfCheckGraceSec);
+    graceRow->addLayout(makeIntegerAdjustment(m_selfCheckGrace, selfCheckCard));
+    selfCheckLayout->addLayout(graceRow);
+    layout->addWidget(selfCheckCard);
+
     auto *storageCard = makeCard(this);
     auto *storageLayout = new QVBoxLayout(storageCard);
     storageLayout->setContentsMargins(16, 10, 16, 10);
@@ -1501,7 +1634,7 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     storageTitle->setObjectName("sectionTitle");
     storageText->addWidget(storageTitle);
     auto *storageHint = new QLabel(
-        QString::fromUtf8("自动记录完整测量/IO 信息，可按日期清理历史 CSV"), storageCard);
+        QString::fromUtf8("CSV 仅记录必要测量值、关键输入和 OT1～OT6 状态，可按日期清理"), storageCard);
     storageHint->setObjectName("mutedText");
     storageText->addWidget(storageHint);
     storageTop->addLayout(storageText, 1);
@@ -1512,6 +1645,23 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     m_recordInterval->setValue(config.recordIntervalSec);
     storageTop->addLayout(makeIntegerAdjustment(m_recordInterval, storageCard));
     storageLayout->addLayout(storageTop);
+
+    auto *storagePolicy = new QHBoxLayout;
+    storagePolicy->addWidget(new QLabel(QString::fromUtf8("自动保留"), storageCard));
+    m_retentionDays = new QSpinBox(storageCard);
+    m_retentionDays->setRange(1, 3650);
+    m_retentionDays->setSuffix(QString::fromUtf8(" 天"));
+    m_retentionDays->setValue(config.retentionDays);
+    storagePolicy->addLayout(makeIntegerAdjustment(m_retentionDays, storageCard));
+    storagePolicy->addStretch();
+    storagePolicy->addWidget(new QLabel(QString::fromUtf8("日志容量上限"), storageCard));
+    m_maxStorageMB = new QSpinBox(storageCard);
+    m_maxStorageMB->setRange(16, 102400);
+    m_maxStorageMB->setSuffix(" MB");
+    m_maxStorageMB->setSingleStep(16);
+    m_maxStorageMB->setValue(config.maxStorageMB);
+    storagePolicy->addLayout(makeIntegerAdjustment(m_maxStorageMB, storageCard));
+    storageLayout->addLayout(storagePolicy);
 
     auto *storageActions = new QHBoxLayout;
     m_storageSummary = new QLabel(QString::fromUtf8("正在读取存储空间…"), storageCard);
@@ -1535,6 +1685,46 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     storageActions->addWidget(deleteOld);
     storageLayout->addLayout(storageActions);
     layout->addWidget(storageCard);
+
+    auto *spareCard = makeCard(this);
+    auto *spareLayout = new QVBoxLayout(spareCard);
+    spareLayout->setContentsMargins(16, 10, 16, 10);
+    spareLayout->setSpacing(8);
+    auto *spareTitle = new QLabel(QString::fromUtf8("备用接口逻辑"), spareCard);
+    spareTitle->setObjectName("sectionTitle");
+    spareLayout->addWidget(spareTitle);
+    auto *spareHint = new QLabel(QString::fromUtf8(
+        "OT1/2/5/6 可安全关闭、手动控制、跟随自动运行或跟随报警；备用输入可设联锁"), spareCard);
+    spareHint->setObjectName("mutedText");
+    spareHint->setWordWrap(true);
+    spareLayout->addWidget(spareHint);
+    auto *spareGrid = new QGridLayout;
+    const QList<int> spareNumbers = { 1, 2, 5, 6 };
+    for (int i = 0; i < spareNumbers.size(); ++i) {
+        const int output = spareNumbers.at(i);
+        auto *label = new QLabel(QString("OT%1").arg(output), spareCard);
+        auto *combo = new QComboBox(spareCard);
+        combo->addItem(QString::fromUtf8("安全关闭"), "off");
+        combo->addItem(QString::fromUtf8("手动控制"), "manual");
+        combo->addItem(QString::fromUtf8("跟随自动运行"), "auto");
+        combo->addItem(QString::fromUtf8("跟随报警"), "alarm");
+        const int mode = combo->findData(spareOutputMode(config, output));
+        combo->setCurrentIndex(mode >= 0 ? mode : 0);
+        m_spareOutputModes[output] = combo;
+        spareGrid->addWidget(label, i / 2, (i % 2) * 2);
+        spareGrid->addWidget(combo, i / 2, (i % 2) * 2 + 1);
+        spareGrid->setColumnStretch((i % 2) * 2 + 1, 1);
+    }
+    spareGrid->addWidget(new QLabel(QString::fromUtf8("备用输入"), spareCard), 2, 0);
+    m_reservedInputMode = new QComboBox(spareCard);
+    m_reservedInputMode->addItem(QString::fromUtf8("仅监视"), "monitor");
+    m_reservedInputMode->addItem(QString::fromUtf8("高电平时联锁"), "interlock_high");
+    m_reservedInputMode->addItem(QString::fromUtf8("低电平时联锁"), "interlock_low");
+    const int reservedMode = m_reservedInputMode->findData(config.reservedInputMode);
+    m_reservedInputMode->setCurrentIndex(reservedMode >= 0 ? reservedMode : 0);
+    spareGrid->addWidget(m_reservedInputMode, 2, 1, 1, 3);
+    spareLayout->addLayout(spareGrid);
+    layout->addWidget(spareCard);
 
     auto *relayCard = makeCard(this);
     auto *relayLayout = new QHBoxLayout(relayCard);
@@ -1585,10 +1775,14 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
         m_pidKp->setEnabled(pid);
         m_pidKi->setEnabled(pid);
         m_pidKd->setEnabled(pid);
+        m_pidSingleStage->setEnabled(pid);
+        m_pidDualStage->setEnabled(pid);
         if (pid) {
             m_formula->setText(QString::fromUtf8(
-                "PID 需求量：< 10% 全关，10～60% 开 OT3，≥ 60% 开 OT3+OT4；"
-                "Kp=%1、Ki=%2、Kd=%3。外部电压 > %4 V 时强制切断。")
+                "PID 需求量：< %1% 全关，%1～%2% 开 OT3，≥ %2% 开 OT3+OT4；"
+                "Kp=%3、Ki=%4、Kd=%5。外部电压 > %6 V 时强制切断。")
+                .arg(m_pidSingleStage->value(), 0, 'f', 1)
+                .arg(m_pidDualStage->value(), 0, 'f', 1)
                 .arg(m_pidKp->value(), 0, 'f', 2)
                 .arg(m_pidKi->value(), 0, 'f', 2)
                 .arg(m_pidKd->value(), 0, 'f', 2)
@@ -1619,6 +1813,10 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
             this, [updateFormula](double) { updateFormula(); });
     connect(m_pidKd, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [updateFormula](double) { updateFormula(); });
+    connect(m_pidSingleStage, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [updateFormula](double) { updateFormula(); });
+    connect(m_pidDualStage, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [updateFormula](double) { updateFormula(); });
     auto clearFeedback = [this]() {
         m_feedbackTimer->stop();
         m_actionFeedback->clear();
@@ -1626,14 +1824,22 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     for (QDoubleSpinBox *input : {
              m_targetTemp, m_lowerHysteresis,
              m_upperHysteresis, m_highVoltageThreshold,
-             m_pidKp, m_pidKi, m_pidKd }) {
+             m_pidKp, m_pidKi, m_pidKd, m_pidSingleStage, m_pidDualStage,
+             m_sensorTemperatureMin, m_sensorTemperatureMax,
+             m_sensorHumidityMin, m_sensorHumidityMax }) {
         connect(input, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, [clearFeedback](double) { clearFeedback(); });
     }
-    for (QSpinBox *input : { m_recordInterval, m_relaySwitchInterval }) {
+    for (QSpinBox *input : { m_recordInterval, m_relaySwitchInterval,
+                             m_selfCheckGrace, m_retentionDays, m_maxStorageMB }) {
         connect(input, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [clearFeedback](int) { clearFeedback(); });
     }
+    for (QComboBox *combo : m_spareOutputModes)
+        connect(combo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                this, [clearFeedback](int) { clearFeedback(); });
+    connect(m_reservedInputMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [clearFeedback](int) { clearFeedback(); });
     connect(save, &QPushButton::clicked, this, &SettingsWidget::saveSettings);
     connect(rescan, &QPushButton::clicked, this, &SettingsWidget::rescanRequested);
     connect(refreshStorage, &QPushButton::clicked,
@@ -1656,9 +1862,41 @@ void SettingsWidget::saveSettings()
     config.general().pidKp = m_pidKp->value();
     config.general().pidKi = m_pidKi->value();
     config.general().pidKd = m_pidKd->value();
+    config.general().pidSingleStagePercent = qMin(
+        m_pidSingleStage->value(), m_pidDualStage->value());
+    config.general().pidDualStagePercent = qMax(
+        m_pidSingleStage->value(), m_pidDualStage->value());
+    double temperatureMin = qMin(
+        m_sensorTemperatureMin->value(), m_sensorTemperatureMax->value());
+    double temperatureMax = qMax(
+        m_sensorTemperatureMin->value(), m_sensorTemperatureMax->value());
+    if (temperatureMin == temperatureMax)
+        temperatureMin -= 0.1;
+    config.general().sensorTemperatureMin = temperatureMin;
+    config.general().sensorTemperatureMax = temperatureMax;
+    double humidityMin = qMin(
+        m_sensorHumidityMin->value(), m_sensorHumidityMax->value());
+    double humidityMax = qMax(
+        m_sensorHumidityMin->value(), m_sensorHumidityMax->value());
+    if (humidityMin == humidityMax) {
+        if (humidityMax < 100.0)
+            humidityMax += 0.1;
+        else
+            humidityMin -= 0.1;
+    }
+    config.general().sensorHumidityMin = humidityMin;
+    config.general().sensorHumidityMax = humidityMax;
+    config.general().selfCheckGraceSec = m_selfCheckGrace->value();
     config.general().highVoltageThreshold = m_highVoltageThreshold->value();
     config.general().relaySwitchIntervalSec = m_relaySwitchInterval->value();
     config.general().recordIntervalSec = m_recordInterval->value();
+    config.general().retentionDays = m_retentionDays->value();
+    config.general().maxStorageMB = m_maxStorageMB->value();
+    config.general().spareOt01Mode = m_spareOutputModes.value(1)->currentData().toString();
+    config.general().spareOt02Mode = m_spareOutputModes.value(2)->currentData().toString();
+    config.general().spareOt05Mode = m_spareOutputModes.value(5)->currentData().toString();
+    config.general().spareOt06Mode = m_spareOutputModes.value(6)->currentData().toString();
+    config.general().reservedInputMode = m_reservedInputMode->currentData().toString();
     const bool saved = config.configFilePath().isEmpty()
         || config.save(config.configFilePath());
     showActionFeedback(saved
@@ -2001,12 +2239,18 @@ void MainWindow::writeToDevice(const DeviceProfile::DeviceKey &key,
 {
     if (!m_scheduler || !m_deviceManager.hasDevice(key))
         return;
+    const AppConfig::GeneralConfig &config = AppConfig::instance().general();
     const QStringList spareOutputs = { "ot01", "ot02", "ot05", "ot06" };
     for (const QString &field : spareOutputs) {
         if (fields.contains(field)) {
-            m_statusBar->setText(QString::fromUtf8(
-                "备用输出 %1 采用安全关闭策略，已拦截操作").arg(field.toUpper()));
-            return;
+            const int output = field.mid(2).toInt();
+            if (spareOutputMode(config, output) != "manual") {
+                m_statusBar->setText(QString::fromUtf8(
+                    "备用输出 %1 当前为“%2”，已拦截手动操作")
+                    .arg(field.toUpper(), spareModeDisplayName(
+                        spareOutputMode(config, output))));
+                return;
+            }
         }
     }
     if (m_highVoltageAlarm && (fields.contains("ot03") || fields.contains("ot04"))) {
@@ -2017,6 +2261,12 @@ void MainWindow::writeToDevice(const DeviceProfile::DeviceKey &key,
         && (fields.contains("ot03") || fields.contains("ot04"))) {
         m_statusBar->setText(QString::fromUtf8(
             "该子板温湿度自检异常，已拦截 OT3 / OT4 操作"));
+        return;
+    }
+    if (m_reservedInputInterlocks.contains(commandKey(key))
+        && (fields.contains("ot03") || fields.contains("ot04"))) {
+        m_statusBar->setText(QString::fromUtf8(
+            "该子板备用输入联锁中，已拦截 OT3 / OT4 操作"));
         return;
     }
     m_scheduler->writeToDevice(key, fields);
@@ -2034,6 +2284,13 @@ void MainWindow::setAutomaticRunning(bool running)
         m_statusBar->setText(QString::fromUtf8(
             "仍有 %1 块子板温湿度自检异常，无法启动自动运行")
             .arg(m_sensorFaults.size()));
+        m_autoPanel->setRunning(false);
+        return;
+    }
+    if (running && !m_reservedInputInterlocks.isEmpty()) {
+        m_statusBar->setText(QString::fromUtf8(
+            "仍有 %1 块子板备用输入联锁，无法启动自动运行")
+            .arg(m_reservedInputInterlocks.size()));
         m_autoPanel->setRunning(false);
         return;
     }
@@ -2081,6 +2338,8 @@ void MainWindow::onDeviceUpdated(const DeviceProfile::DeviceKey &key)
         initializeSafeOutputs(key);
     if (updatedState.online)
         evaluateSensorSelfCheck(key, updatedState);
+    if (updatedState.online)
+        evaluateReservedInput(key, updatedState);
 
     bool anyHighVoltage = false;
     for (const DeviceState &state : m_deviceManager.allDevices()) {
@@ -2094,7 +2353,8 @@ void MainWindow::onDeviceUpdated(const DeviceProfile::DeviceKey &key)
     else if (!anyHighVoltage && m_highVoltageAlarm)
         leaveHighVoltageAlarm();
 
-    if (m_autoRunning && !m_highVoltageAlarm)
+    if (m_autoRunning && !m_highVoltageAlarm
+        && !m_reservedInputInterlocks.contains(commandKey(key)))
         applyAutomaticControl(key);
     refreshSystemState();
 }
@@ -2122,10 +2382,22 @@ void MainWindow::onSettingsSaved()
     m_rotator.setRetentionDays(config.retentionDays);
     m_rotator.setMaxStorageMB(config.maxStorageMB);
     m_settingsWidget->refreshStorageInfo();
+    m_manualPanel->refreshSettings();
     m_statusBar->setText(QString::fromUtf8("参数已保存并应用"));
     m_lastAutoCommands.clear();
     m_lastAutoCommandTimes.clear();
     m_pidStates.clear();
+    for (const DeviceState &state : m_deviceManager.allDevices()) {
+        if (!state.online)
+            continue;
+        evaluateSensorSelfCheck(state.key, state);
+        evaluateReservedInput(state.key, state);
+        QMap<QString, QVariant> fields;
+        addConfiguredSpareOutputs(fields);
+        if (!fields.isEmpty() && m_scheduler)
+            m_scheduler->writeToDevice(state.key, fields);
+    }
+    refreshSystemState();
 }
 
 void MainWindow::rescanDevices()
@@ -2150,6 +2422,7 @@ void MainWindow::rescanDevices()
     m_sensorFaults.clear();
     m_sensorRecoveryCounts.clear();
     m_sensorHealthyDevices.clear();
+    m_reservedInputInterlocks.clear();
     m_initializedDevices.clear();
     m_startedAt = QDateTime::currentDateTime();
     m_statusBar->setText(QString::fromUtf8("正在重新扫描两路 RS485 子板…"));
@@ -2163,6 +2436,28 @@ void MainWindow::updateClock()
     m_clock->setText(QDateTime::currentDateTime().toString("yyyy-MM-dd  hh:mm:ss"));
 }
 
+void MainWindow::addConfiguredSpareOutputs(QMap<QString, QVariant> &fields,
+                                            bool initializeManual) const
+{
+    const AppConfig::GeneralConfig &config = AppConfig::instance().general();
+    const bool alarm = m_highVoltageAlarm || !m_sensorFaults.isEmpty()
+        || !m_reservedInputInterlocks.isEmpty();
+    for (int output : { 1, 2, 5, 6 }) {
+        const QString mode = spareOutputMode(config, output);
+        const QString field = QString("ot%1").arg(output, 2, 10, QChar('0'));
+        if (mode == "manual") {
+            if (initializeManual)
+                fields[field] = 0;
+        } else if (mode == "auto") {
+            fields[field] = m_autoRunning ? 1 : 0;
+        } else if (mode == "alarm") {
+            fields[field] = alarm ? 1 : 0;
+        } else {
+            fields[field] = 0;
+        }
+    }
+}
+
 void MainWindow::setAllIndicatorLights(int green, int yellow, int red, int buzzer)
 {
     if (!m_scheduler)
@@ -2172,13 +2467,12 @@ void MainWindow::setAllIndicatorLights(int green, int yellow, int red, int buzze
     fields["ot08"] = yellow;
     fields["ot09"] = red;
     fields["ot10"] = buzzer;
-    fields["ot01"] = 0;
-    fields["ot02"] = 0;
-    fields["ot05"] = 0;
-    fields["ot06"] = 0;
+    addConfiguredSpareOutputs(fields);
     for (const DeviceState &state : m_deviceManager.allDevices()) {
         QMap<QString, QVariant> deviceFields = fields;
-        if (!m_highVoltageAlarm && m_sensorFaults.contains(commandKey(state.key))) {
+        if (!m_highVoltageAlarm
+            && (m_sensorFaults.contains(commandKey(state.key))
+                || m_reservedInputInterlocks.contains(commandKey(state.key)))) {
             deviceFields["ot07"] = 0;
             deviceFields["ot08"] = 0;
             deviceFields["ot09"] = 1;
@@ -2192,6 +2486,7 @@ void MainWindow::applyAutomaticControl(const DeviceProfile::DeviceKey &key)
 {
     const int keyValue = commandKey(key);
     if (!m_autoRunning || m_highVoltageAlarm || m_sensorFaults.contains(keyValue)
+        || m_reservedInputInterlocks.contains(keyValue)
         || !m_deviceManager.hasDevice(key))
         return;
     const DeviceState state = m_deviceManager.device(key);
@@ -2287,16 +2582,13 @@ void MainWindow::enterSensorFault(const DeviceProfile::DeviceKey &key,
     }
     if (m_scheduler) {
         QMap<QString, QVariant> fields;
-        fields["ot01"] = 0;
-        fields["ot02"] = 0;
         fields["ot03"] = 0;
         fields["ot04"] = 0;
-        fields["ot05"] = 0;
-        fields["ot06"] = 0;
         fields["ot07"] = 0;
         fields["ot08"] = 0;
         fields["ot09"] = 1;
         fields["ot10"] = 0;
+        addConfiguredSpareOutputs(fields);
         m_scheduler->writeToDevice(key, fields);
     }
     m_statusBar->setText(QString::fromUtf8("ID %1 温湿度自检异常：%2")
@@ -2317,18 +2609,90 @@ void MainWindow::leaveSensorFault(const DeviceProfile::DeviceKey &key)
     m_pidStates.remove(keyValue);
     if (m_scheduler && !m_highVoltageAlarm) {
         QMap<QString, QVariant> fields;
-        fields["ot01"] = 0;
-        fields["ot02"] = 0;
-        fields["ot05"] = 0;
-        fields["ot06"] = 0;
         fields["ot07"] = m_autoRunning ? 1 : 0;
         fields["ot08"] = !m_autoRunning && m_pages->currentIndex() == 0 ? 1 : 0;
-        fields["ot09"] = 0;
+        fields["ot09"] = m_reservedInputInterlocks.contains(keyValue) ? 1 : 0;
         fields["ot10"] = 0;
+        addConfiguredSpareOutputs(fields);
         m_scheduler->writeToDevice(key, fields);
     }
     m_statusBar->setText(QString::fromUtf8(
         "ID %1 温湿度连续 3 次正常，自检告警已解除").arg(key.slaveId));
+}
+
+void MainWindow::evaluateReservedInput(const DeviceProfile::DeviceKey &key,
+                                       const DeviceState &state)
+{
+    const QString mode = AppConfig::instance().general().reservedInputMode;
+    if (mode == "monitor") {
+        leaveReservedInputInterlock(key);
+        return;
+    }
+    if (!state.values.contains("reserved"))
+        return;
+    const int value = state.values.value("reserved").toInt();
+    const bool active = mode == "interlock_high" ? value != 0 : value == 0;
+    if (active)
+        enterReservedInputInterlock(key, value);
+    else
+        leaveReservedInputInterlock(key);
+}
+
+void MainWindow::enterReservedInputInterlock(const DeviceProfile::DeviceKey &key,
+                                              int value)
+{
+    const int keyValue = commandKey(key);
+    if (m_reservedInputInterlocks.contains(keyValue))
+        return;
+    const QString level = value == 0 ? QString::fromUtf8("低电平")
+                                     : QString::fromUtf8("高电平");
+    m_reservedInputInterlocks[keyValue] = level;
+    if (m_autoRunning) {
+        m_autoRunning = false;
+        m_autoPanel->setRunning(false);
+    }
+    m_lastAutoCommands.clear();
+    m_lastAutoCommandTimes.clear();
+    m_pidStates.clear();
+    stopAllControlledOutputs();
+    if (m_scheduler) {
+        QMap<QString, QVariant> fields;
+        fields["ot03"] = 0;
+        fields["ot04"] = 0;
+        fields["ot07"] = 0;
+        fields["ot08"] = 0;
+        fields["ot09"] = 1;
+        fields["ot10"] = 0;
+        addConfiguredSpareOutputs(fields);
+        m_scheduler->writeToDevice(key, fields);
+    }
+    m_statusBar->setText(QString::fromUtf8(
+        "ID %1 备用输入%2联锁：已关闭 OT3/OT4")
+        .arg(key.slaveId).arg(level));
+    QTimer::singleShot(0, this, [this, key, level]() {
+        QMessageBox::critical(this, QString::fromUtf8("备用输入联锁"),
+            QString::fromUtf8("端口 %1 / 子板 ID %2 的备用输入为%3。\n\n"
+                              "已停止自动温控、关闭 OT3/OT4，并点亮该子板红灯。")
+                .arg(key.portIndex + 1).arg(key.slaveId).arg(level));
+    });
+}
+
+void MainWindow::leaveReservedInputInterlock(const DeviceProfile::DeviceKey &key)
+{
+    const int keyValue = commandKey(key);
+    if (!m_reservedInputInterlocks.remove(keyValue))
+        return;
+    if (m_scheduler && !m_highVoltageAlarm) {
+        QMap<QString, QVariant> fields;
+        fields["ot07"] = m_autoRunning ? 1 : 0;
+        fields["ot08"] = !m_autoRunning && m_pages->currentIndex() == 0 ? 1 : 0;
+        fields["ot09"] = m_sensorFaults.contains(keyValue) ? 1 : 0;
+        fields["ot10"] = 0;
+        addConfiguredSpareOutputs(fields);
+        m_scheduler->writeToDevice(key, fields);
+    }
+    m_statusBar->setText(QString::fromUtf8(
+        "ID %1 备用输入联锁已解除，请确认现场后重新启动").arg(key.slaveId));
 }
 
 void MainWindow::stopAllControlledOutputs()
@@ -2336,12 +2700,9 @@ void MainWindow::stopAllControlledOutputs()
     if (!m_scheduler)
         return;
     QMap<QString, QVariant> fields;
-    fields["ot01"] = 0;
-    fields["ot02"] = 0;
     fields["ot03"] = 0;
     fields["ot04"] = 0;
-    fields["ot05"] = 0;
-    fields["ot06"] = 0;
+    addConfiguredSpareOutputs(fields);
     for (const DeviceState &state : m_deviceManager.allDevices())
         m_scheduler->writeToDevice(state.key, fields);
 }
@@ -2352,10 +2713,7 @@ void MainWindow::initializeSafeOutputs(const DeviceProfile::DeviceKey &key)
         return;
     m_initializedDevices.insert(commandKey(key));
     QMap<QString, QVariant> fields;
-    fields["ot01"] = 0;
-    fields["ot02"] = 0;
-    fields["ot05"] = 0;
-    fields["ot06"] = 0;
+    addConfiguredSpareOutputs(fields, true);
     fields["ot07"] = !m_highVoltageAlarm && m_autoRunning ? 1 : 0;
     fields["ot08"] = !m_highVoltageAlarm && !m_autoRunning
         && m_pages->currentIndex() == 0 ? 1 : 0;
@@ -2379,10 +2737,7 @@ void MainWindow::enterHighVoltageAlarm()
         fields["ot08"] = 0;
         fields["ot09"] = 1;
         fields["ot10"] = 1;
-        fields["ot01"] = 0;
-        fields["ot02"] = 0;
-        fields["ot05"] = 0;
-        fields["ot06"] = 0;
+        addConfiguredSpareOutputs(fields);
         for (const DeviceState &state : m_deviceManager.allDevices())
             m_scheduler->writeToDevice(state.key, fields);
     }
@@ -2420,6 +2775,10 @@ void MainWindow::refreshSystemState()
         alarm = true;
     } else if (m_schedulerFault) {
         m_systemState->setText(QString::fromUtf8("⚠  通信异常"));
+        alarm = true;
+    } else if (!m_reservedInputInterlocks.isEmpty()) {
+        m_systemState->setText(QString::fromUtf8("⚠  备用输入联锁 %1 块")
+                                   .arg(m_reservedInputInterlocks.size()));
         alarm = true;
     } else if (!m_sensorFaults.isEmpty()) {
         m_systemState->setText(QString::fromUtf8("⚠  温湿度自检异常 %1 块")

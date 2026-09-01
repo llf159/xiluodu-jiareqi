@@ -13,8 +13,6 @@ struct SensorLimits {
     double temperatureMax = 85.0;
     double humidityMin = 0.0;
     double humidityMax = 100.0;
-    double temperatureMaxDeviation = 15.0;
-    double humidityMaxDeviation = 30.0;
 };
 
 struct SensorCheck {

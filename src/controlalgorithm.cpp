@@ -2,7 +2,6 @@
 
 #include <QtGlobal>
 #include <QVector>
-#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -29,14 +28,11 @@ void checkGroup(const QMap<QString, QVariant> &values,
                 const QStringList &fields,
                 double minimum,
                 double maximum,
-                double maxDeviation,
                 const QString &unit,
                 ControlAlgorithm::SensorCheck &result)
 {
-    QVector<QPair<QString, double>> samples;
     for (const QString &field : fields) {
         const double value = engineeringValue(values.value(field));
-        samples.append(qMakePair(field, value));
         if (outside(value, minimum, maximum)) {
             result.faultyFields.append(field);
             result.message = QString::fromUtf8("%1读数 %2 %3 超出有效范围 %4～%5 %3")
@@ -45,26 +41,6 @@ void checkGroup(const QMap<QString, QVariant> &values,
                 .arg(unit)
                 .arg(minimum, 0, 'f', 1)
                 .arg(maximum, 0, 'f', 1);
-            result.state = ControlAlgorithm::SensorCheck::Fault;
-            return;
-        }
-    }
-
-    QVector<double> sorted;
-    for (const auto &sample : samples)
-        sorted.append(sample.second);
-    std::sort(sorted.begin(), sorted.end());
-    const double median = sorted.at(sorted.size() / 2);
-    for (const auto &sample : samples) {
-        const double deviation = std::abs(sample.second - median);
-        if (deviation > maxDeviation) {
-            result.faultyFields.append(sample.first);
-            result.message = QString::fromUtf8(
-                "%1与其余探头偏差 %2 %3，超过允许值 %4 %3")
-                .arg(sensorLabel(sample.first))
-                .arg(deviation, 0, 'f', 1)
-                .arg(unit)
-                .arg(maxDeviation, 0, 'f', 1);
             result.state = ControlAlgorithm::SensorCheck::Fault;
             return;
         }
@@ -110,12 +86,12 @@ SensorCheck checkTemperatureHumidity(
     result.message = QString::fromUtf8("温湿度自检正常");
     checkGroup(values, temperatureFields,
                limits.temperatureMin, limits.temperatureMax,
-               limits.temperatureMaxDeviation, QString::fromUtf8("℃"), result);
+               QString::fromUtf8("℃"), result);
     if (result.state == SensorCheck::Fault)
         return result;
     checkGroup(values, humidityFields,
                limits.humidityMin, limits.humidityMax,
-               limits.humidityMaxDeviation, QString::fromUtf8("%RH"), result);
+               QString::fromUtf8("%RH"), result);
     return result;
 }
 

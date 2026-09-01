@@ -5,7 +5,6 @@
 // ============================================================
 
 #include "applogic.h"
-#include "controlalgorithm.h"
 #include <QSettings>
 #include <QFileInfo>
 #include <QDir>
@@ -65,10 +64,24 @@ bool AppConfig::load(const QString &iniPath)
         ini.value("sensorHumidityMin", 0.0).toDouble();
     m_general.sensorHumidityMax =
         ini.value("sensorHumidityMax", 100.0).toDouble();
-    m_general.sensorTemperatureMaxDeviation =
-        ini.value("sensorTemperatureMaxDeviation", 15.0).toDouble();
-    m_general.sensorHumidityMaxDeviation =
-        ini.value("sensorHumidityMaxDeviation", 30.0).toDouble();
+    auto validSpareMode = [](const QString &mode) {
+        return mode == "off" || mode == "manual"
+            || mode == "auto" || mode == "alarm";
+    };
+    m_general.spareOt01Mode = ini.value("spareOt01Mode", "off").toString();
+    m_general.spareOt02Mode = ini.value("spareOt02Mode", "off").toString();
+    m_general.spareOt05Mode = ini.value("spareOt05Mode", "off").toString();
+    m_general.spareOt06Mode = ini.value("spareOt06Mode", "off").toString();
+    for (QString *mode : { &m_general.spareOt01Mode, &m_general.spareOt02Mode,
+                           &m_general.spareOt05Mode, &m_general.spareOt06Mode }) {
+        if (!validSpareMode(*mode))
+            *mode = "off";
+    }
+    m_general.reservedInputMode =
+        ini.value("reservedInputMode", "monitor").toString();
+    if (m_general.reservedInputMode != "interlock_high"
+        && m_general.reservedInputMode != "interlock_low")
+        m_general.reservedInputMode = "monitor";
     m_general.pidKp = qBound(0.0, m_general.pidKp, 100.0);
     m_general.pidKi = qBound(0.0, m_general.pidKi, 10.0);
     m_general.pidKd = qBound(0.0, m_general.pidKd, 100.0);
@@ -83,9 +96,6 @@ bool AppConfig::load(const QString &iniPath)
         m_validationErrors.append(QString::fromUtf8("温度自检量程配置无效"));
     if (m_general.sensorHumidityMin >= m_general.sensorHumidityMax)
         m_validationErrors.append(QString::fromUtf8("湿度自检量程配置无效"));
-    if (m_general.sensorTemperatureMaxDeviation <= 0.0
-        || m_general.sensorHumidityMaxDeviation <= 0.0)
-        m_validationErrors.append(QString::fromUtf8("传感器偏差阈值必须大于 0"));
     m_general.highVoltageThreshold = ini.value("highVoltageThreshold", 1.0).toDouble();
     m_general.relaySwitchIntervalSec = ini.value("relaySwitchIntervalSec", 10).toInt();
     m_general.recordIntervalSec = ini.value("recordIntervalSec", 1).toInt();
@@ -138,10 +148,11 @@ bool AppConfig::save(const QString &iniPath) const
     ini.setValue("sensorTemperatureMax", m_general.sensorTemperatureMax);
     ini.setValue("sensorHumidityMin", m_general.sensorHumidityMin);
     ini.setValue("sensorHumidityMax", m_general.sensorHumidityMax);
-    ini.setValue("sensorTemperatureMaxDeviation",
-                 m_general.sensorTemperatureMaxDeviation);
-    ini.setValue("sensorHumidityMaxDeviation",
-                 m_general.sensorHumidityMaxDeviation);
+    ini.setValue("spareOt01Mode", m_general.spareOt01Mode);
+    ini.setValue("spareOt02Mode", m_general.spareOt02Mode);
+    ini.setValue("spareOt05Mode", m_general.spareOt05Mode);
+    ini.setValue("spareOt06Mode", m_general.spareOt06Mode);
+    ini.setValue("reservedInputMode", m_general.reservedInputMode);
     ini.setValue("highVoltageThreshold", m_general.highVoltageThreshold);
     ini.setValue("relaySwitchIntervalSec", m_general.relaySwitchIntervalSec);
     ini.setValue("recordIntervalSec", m_general.recordIntervalSec);
@@ -292,14 +303,11 @@ void DataLogger::ensureHeader(QTextStream &out, const QString &filePath)
     if (f.exists() && f.size() > 0)
         return;
 
-    out << "timestamp,port,slave_id,device_name,device_type,"
-           "temperature_avg_c,humidity_avg_pct,"
+    out << "timestamp,port,slave_id,device_name,"
            "th1_temp_c,th1_humi_pct,th2_temp_c,th2_humi_pct,"
            "th3_temp_c,th3_humi_pct,pt1_temp_c,pt2_temp_c,"
-           "hv_input,external_voltage_v,reserved_input,"
-           "ot01,ot02,ot03,ot04,ot05,ot06,ot07,ot08,ot09,ot10,"
-           "control_mode,target_temp_c,lower_hysteresis_c,upper_hysteresis_c,"
-           "pid_kp,pid_ki,pid_kd,sensor_quality,sensor_fault_reason,data_json\n";
+           "external_voltage_v,reserved_input,"
+           "ot01,ot02,ot03,ot04,ot05,ot06\n";
 }
 
 void DataLogger::appendRecord(const DeviceProfile::DeviceKey &key,
@@ -342,56 +350,19 @@ void DataLogger::appendRecord(const DeviceProfile::DeviceKey &key,
     auto raw = [&values](const QString &field) {
         return values.contains(field) ? values.value(field).toString() : QString();
     };
-    auto average = [&values](const QStringList &fields) {
-        double sum = 0.0;
-        int count = 0;
-        for (const QString &field : fields) {
-            if (!values.contains(field))
-                continue;
-            sum += values.value(field).toInt() / 10.0;
-            ++count;
-        }
-        return count > 0 ? QString::number(sum / count, 'f', 1) : QString();
-    };
-
-    const AppConfig::GeneralConfig &config = AppConfig::instance().general();
-    ControlAlgorithm::SensorLimits limits;
-    limits.temperatureMin = config.sensorTemperatureMin;
-    limits.temperatureMax = config.sensorTemperatureMax;
-    limits.humidityMin = config.sensorHumidityMin;
-    limits.humidityMax = config.sensorHumidityMax;
-    limits.temperatureMaxDeviation = config.sensorTemperatureMaxDeviation;
-    limits.humidityMaxDeviation = config.sensorHumidityMaxDeviation;
-    const ControlAlgorithm::SensorCheck health =
-        ControlAlgorithm::checkTemperatureHumidity(values, limits, true);
-    const QString quality = health.state == ControlAlgorithm::SensorCheck::Healthy
-        ? "ok" : health.state == ControlAlgorithm::SensorCheck::Waiting ? "waiting" : "fault";
-
     const QDateTime timestamp = QDateTime::currentDateTime();
     QStringList columns;
     columns << timestamp.toString(Qt::ISODateWithMs)
             << QString::number(key.portIndex)
             << QString::number(key.slaveId)
             << deviceName
-            << DeviceProfile::deviceTypeToString(type)
-            << average({ "th1_temp", "th2_temp", "th3_temp" })
-            << average({ "th1_humi", "th2_humi", "th3_humi" })
             << engineering("th1_temp") << engineering("th1_humi")
             << engineering("th2_temp") << engineering("th2_humi")
             << engineering("th3_temp") << engineering("th3_humi")
             << engineering("pt1_temp") << engineering("pt2_temp")
-            << raw("hv_input") << engineering("external_voltage") << raw("reserved");
-    for (int i = 1; i <= 10; ++i)
+            << engineering("external_voltage") << raw("reserved");
+    for (int i = 1; i <= 6; ++i)
         columns << raw(QString("ot%1").arg(i, 2, 10, QChar('0')));
-    columns << config.temperatureControlMode
-            << QString::number(config.temperatureTarget, 'f', 1)
-            << QString::number(config.lowerHysteresis, 'f', 1)
-            << QString::number(config.upperHysteresis, 'f', 1)
-            << QString::number(config.pidKp, 'f', 2)
-            << QString::number(config.pidKi, 'f', 2)
-            << QString::number(config.pidKd, 'f', 2)
-            << quality
-            << health.message;
     QString line;
     const QString jsonText =
         QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact));
@@ -404,7 +375,7 @@ void DataLogger::appendRecord(const DeviceProfile::DeviceKey &key,
             .arg(DeviceProfile::deviceTypeToString(type))
             .arg(jsonText);
     } else {
-        line = columns.join(',') + ',' + jsonText + '\n';
+        line = columns.join(',') + '\n';
     }
 
     out << line;
@@ -455,19 +426,21 @@ QVector<HistoryQuery::DeviceInfo> HistoryQuery::availableDevices() const
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
             continue;
         QTextStream in(&file);
-        in.readLine();
+        const QStringList header = in.readLine().trimmed().split(',');
+        const int portColumn = header.indexOf("port");
+        const int slaveColumn = header.indexOf("slave_id");
+        const int nameColumn = header.indexOf("device_name");
+        if (portColumn < 0 || slaveColumn < 0 || nameColumn < 0)
+            continue;
         while (!in.atEnd()) {
-            const QString line = in.readLine();
-            const int p1 = line.indexOf(',');
-            const int p2 = line.indexOf(',', p1 + 1);
-            const int p3 = line.indexOf(',', p2 + 1);
-            const int p4 = line.indexOf(',', p3 + 1);
-            if (p1 < 0 || p2 < 0 || p3 < 0 || p4 < 0)
+            const QStringList columns = in.readLine().trimmed().split(',');
+            const int required = qMax(portColumn, qMax(slaveColumn, nameColumn));
+            if (columns.size() <= required)
                 continue;
             DeviceInfo info;
-            info.portIndex = line.mid(p1 + 1, p2 - p1 - 1).toInt();
-            info.slaveId = line.mid(p2 + 1, p3 - p2 - 1).toInt();
-            info.name = line.mid(p3 + 1, p4 - p3 - 1);
+            info.portIndex = columns.at(portColumn).toInt();
+            info.slaveId = columns.at(slaveColumn).toInt();
+            info.name = columns.at(nameColumn);
             devices.insert(QPair<int, int>(info.portIndex, info.slaveId), info);
         }
     }
@@ -491,7 +464,12 @@ QVector<HistoryQuery::Record> HistoryQuery::parseFile(const QString &filePath,
     int dataColumn = headerFields.indexOf("data_json");
     if (dataColumn < 0)
         dataColumn = headerFields.indexOf("data");
-    if (dataColumn < 5)
+    const int timestampColumn = headerFields.indexOf("timestamp");
+    const int portColumn = headerFields.indexOf("port");
+    const int slaveColumn = headerFields.indexOf("slave_id");
+    const int nameColumn = headerFields.indexOf("device_name");
+    if (timestampColumn < 0 || portColumn < 0
+        || slaveColumn < 0 || nameColumn < 0)
         return results;
 
     while (!in.atEnd()) {
@@ -499,27 +477,83 @@ QVector<HistoryQuery::Record> HistoryQuery::parseFile(const QString &filePath,
         if (line.isEmpty())
             continue;
 
-        QStringList fixed;
-        int fieldStart = 0;
-        int comma = -1;
-        for (int i = 0; i < dataColumn; ++i) {
-            comma = line.indexOf(',', fieldStart);
-            if (comma < 0)
-                break;
-            fixed.append(line.mid(fieldStart, comma - fieldStart));
-            fieldStart = comma + 1;
-        }
-        if (fixed.size() != dataColumn)
-            continue;
-
         Record rec;
-        rec.timestamp = QDateTime::fromString(fixed.at(0), Qt::ISODateWithMs);
-        if (!rec.timestamp.isValid())
-            rec.timestamp = QDateTime::fromString(fixed.at(0), "yyyy-MM-dd hh:mm:ss");
-        rec.portIndex = fixed.at(1).toInt();
-        rec.slaveId = fixed.at(2).toInt();
-        rec.deviceName = fixed.at(3);
-        rec.deviceType = DeviceProfile::deviceTypeFromString(fixed.at(4));
+        rec.deviceType = DeviceProfile::PcbBoard;
+        if (dataColumn >= 0) {
+            QStringList fixed;
+            int fieldStart = 0;
+            int comma = -1;
+            for (int i = 0; i < dataColumn; ++i) {
+                comma = line.indexOf(',', fieldStart);
+                if (comma < 0)
+                    break;
+                fixed.append(line.mid(fieldStart, comma - fieldStart));
+                fieldStart = comma + 1;
+            }
+            if (fixed.size() != dataColumn
+                || fixed.size() <= qMax(nameColumn, slaveColumn))
+                continue;
+            rec.timestamp =
+                QDateTime::fromString(fixed.at(timestampColumn), Qt::ISODateWithMs);
+            if (!rec.timestamp.isValid())
+                rec.timestamp = QDateTime::fromString(
+                    fixed.at(timestampColumn), "yyyy-MM-dd hh:mm:ss");
+            rec.portIndex = fixed.at(portColumn).toInt();
+            rec.slaveId = fixed.at(slaveColumn).toInt();
+            rec.deviceName = fixed.at(nameColumn);
+            const int typeColumn = headerFields.indexOf("device_type");
+            if (typeColumn >= 0 && typeColumn < fixed.size())
+                rec.deviceType =
+                    DeviceProfile::deviceTypeFromString(fixed.at(typeColumn));
+
+            const QString jsonStr = line.mid(fieldStart);
+            const QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8());
+            if (doc.isObject()) {
+                const QJsonObject obj = doc.object();
+                for (auto it = obj.constBegin(); it != obj.constEnd(); ++it)
+                    rec.values[it.key()] = it.value().toVariant();
+            }
+        } else {
+            const QStringList columns = line.split(',');
+            if (columns.size() < headerFields.size())
+                continue;
+            rec.timestamp =
+                QDateTime::fromString(columns.at(timestampColumn), Qt::ISODateWithMs);
+            if (!rec.timestamp.isValid())
+                rec.timestamp = QDateTime::fromString(
+                    columns.at(timestampColumn), "yyyy-MM-dd hh:mm:ss");
+            rec.portIndex = columns.at(portColumn).toInt();
+            rec.slaveId = columns.at(slaveColumn).toInt();
+            rec.deviceName = columns.at(nameColumn);
+
+            const QMap<QString, QString> engineeringFields = {
+                { "th1_temp_c", "th1_temp" }, { "th1_humi_pct", "th1_humi" },
+                { "th2_temp_c", "th2_temp" }, { "th2_humi_pct", "th2_humi" },
+                { "th3_temp_c", "th3_temp" }, { "th3_humi_pct", "th3_humi" },
+                { "pt1_temp_c", "pt1_temp" }, { "pt2_temp_c", "pt2_temp" },
+                { "external_voltage_v", "external_voltage" }
+            };
+            for (auto it = engineeringFields.constBegin();
+                 it != engineeringFields.constEnd(); ++it) {
+                const int column = headerFields.indexOf(it.key());
+                if (column >= 0 && column < columns.size()
+                    && !columns.at(column).isEmpty())
+                    rec.values[it.value()] = qRound(columns.at(column).toDouble() * 10.0);
+            }
+            const QStringList rawFields = {
+                "hv_input", "reserved_input",
+                "ot01", "ot02", "ot03", "ot04", "ot05", "ot06"
+            };
+            for (const QString &columnName : rawFields) {
+                const int column = headerFields.indexOf(columnName);
+                if (column < 0 || column >= columns.size()
+                    || columns.at(column).isEmpty())
+                    continue;
+                const QString valueField =
+                    columnName == "reserved_input" ? "reserved" : columnName;
+                rec.values[valueField] = columns.at(column).toInt();
+            }
+        }
 
         if (filter.portIndex >= 0 && rec.portIndex != filter.portIndex)
             continue;
@@ -528,14 +562,6 @@ QVector<HistoryQuery::Record> HistoryQuery::parseFile(const QString &filePath,
         if (!filter.deviceType.isEmpty()
             && DeviceProfile::deviceTypeToString(rec.deviceType) != filter.deviceType)
             continue;
-
-        const QString jsonStr = line.mid(fieldStart);
-        const QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8());
-        if (doc.isObject()) {
-            const QJsonObject obj = doc.object();
-            for (auto it = obj.constBegin(); it != obj.constEnd(); ++it)
-                rec.values[it.key()] = it.value().toVariant();
-        }
 
         results.append(rec);
     }

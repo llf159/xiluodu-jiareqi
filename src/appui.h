@@ -61,6 +61,7 @@ public:
 
     DeviceProfile::DeviceKey currentDevice() const;
     void setCurrentDevice(const DeviceProfile::DeviceKey &key);
+    void refreshSettings();
 
 signals:
     void writeRequested(const DeviceProfile::DeviceKey &key,
@@ -76,6 +77,7 @@ private:
     QLabel *m_operationBanner = nullptr;
     QPushButton *m_ot3 = nullptr;
     QPushButton *m_ot4 = nullptr;
+    QMap<QString, QPushButton *> m_spareOutputs;
 };
 
 /** 自动运行：状态监视、阈值摘要和启停。 */
@@ -220,9 +222,20 @@ private:
     QDoubleSpinBox *m_pidKp = nullptr;
     QDoubleSpinBox *m_pidKi = nullptr;
     QDoubleSpinBox *m_pidKd = nullptr;
+    QDoubleSpinBox *m_pidSingleStage = nullptr;
+    QDoubleSpinBox *m_pidDualStage = nullptr;
     QDoubleSpinBox *m_highVoltageThreshold = nullptr;
+    QDoubleSpinBox *m_sensorTemperatureMin = nullptr;
+    QDoubleSpinBox *m_sensorTemperatureMax = nullptr;
+    QDoubleSpinBox *m_sensorHumidityMin = nullptr;
+    QDoubleSpinBox *m_sensorHumidityMax = nullptr;
+    QSpinBox *m_selfCheckGrace = nullptr;
     QSpinBox *m_relaySwitchInterval = nullptr;
     QSpinBox *m_recordInterval = nullptr;
+    QSpinBox *m_retentionDays = nullptr;
+    QSpinBox *m_maxStorageMB = nullptr;
+    QMap<int, QComboBox *> m_spareOutputModes;
+    QComboBox *m_reservedInputMode = nullptr;
     QLabel *m_storageSummary = nullptr;
     QDateEdit *m_deleteBeforeDate = nullptr;
     QLabel *m_formula = nullptr;
@@ -265,6 +278,13 @@ private:
     void leaveSensorFault(const DeviceProfile::DeviceKey &key);
     void stopAllControlledOutputs();
     void initializeSafeOutputs(const DeviceProfile::DeviceKey &key);
+    void addConfiguredSpareOutputs(QMap<QString, QVariant> &fields,
+                                   bool initializeManual = false) const;
+    void evaluateReservedInput(const DeviceProfile::DeviceKey &key,
+                               const DeviceState &state);
+    void enterReservedInputInterlock(const DeviceProfile::DeviceKey &key,
+                                     int value);
+    void leaveReservedInputInterlock(const DeviceProfile::DeviceKey &key);
     void refreshSystemState();
 
     DeviceManager m_deviceManager;
@@ -294,6 +314,7 @@ private:
     QMap<int, QString> m_sensorFaults;
     QMap<int, int> m_sensorRecoveryCounts;
     QSet<int> m_sensorHealthyDevices;
+    QMap<int, QString> m_reservedInputInterlocks;
     QSet<int> m_initializedDevices;
 };
 

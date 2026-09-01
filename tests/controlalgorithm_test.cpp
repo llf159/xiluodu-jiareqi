@@ -8,10 +8,12 @@ class ControlAlgorithmTest : public QObject
 
 private slots:
     void sensorHealthAcceptsNormalReadings();
-    void sensorHealthRejectsExtremeValue();
+    void sensorHealthAllowsDifferentLocations();
+    void sensorHealthRejectsOutOfRangeValue();
     void sensorHealthWaitsThenFailsOnMissingData();
     void thresholdModeMatchesRequirement();
     void pidModeProducesSafeStages();
+    void pidStageThresholdsAreConfigurable();
 };
 
 static QMap<QString, QVariant> normalValues()
@@ -33,10 +35,21 @@ void ControlAlgorithmTest::sensorHealthAcceptsNormalReadings()
     QCOMPARE(result.state, ControlAlgorithm::SensorCheck::Healthy);
 }
 
-void ControlAlgorithmTest::sensorHealthRejectsExtremeValue()
+void ControlAlgorithmTest::sensorHealthAllowsDifferentLocations()
 {
     auto values = normalValues();
+    values["th1_temp"] = -300;
+    values["th2_temp"] = 250;
     values["th3_temp"] = 800;
+    const auto result = ControlAlgorithm::checkTemperatureHumidity(
+        values, ControlAlgorithm::SensorLimits(), false);
+    QCOMPARE(result.state, ControlAlgorithm::SensorCheck::Healthy);
+}
+
+void ControlAlgorithmTest::sensorHealthRejectsOutOfRangeValue()
+{
+    auto values = normalValues();
+    values["th3_temp"] = 900;
     const auto result = ControlAlgorithm::checkTemperatureHumidity(
         values, ControlAlgorithm::SensorLimits(), false);
     QCOMPARE(result.state, ControlAlgorithm::SensorCheck::Fault);
@@ -85,6 +98,28 @@ void ControlAlgorithmTest::pidModeProducesSafeStages()
     QCOMPARE(off.ot3, 0);
     QCOMPARE(off.ot4, 0);
     QVERIFY(off.demandPercent >= 0.0);
+}
+
+void ControlAlgorithmTest::pidStageThresholdsAreConfigurable()
+{
+    ControlAlgorithm::PidConfig config;
+    config.kp = 10.0;
+    config.ki = 0.0;
+    config.kd = 0.0;
+    config.singleStagePercent = 30.0;
+    config.dualStagePercent = 80.0;
+
+    ControlAlgorithm::PidState state;
+    const auto single = ControlAlgorithm::pidControl(
+        20.0, 25.0, 1000, config, state);
+    QCOMPARE(single.ot3, 1);
+    QCOMPARE(single.ot4, 0);
+
+    state = ControlAlgorithm::PidState();
+    const auto dual = ControlAlgorithm::pidControl(
+        15.0, 25.0, 1000, config, state);
+    QCOMPARE(dual.ot3, 1);
+    QCOMPARE(dual.ot4, 1);
 }
 
 QTEST_APPLESS_MAIN(ControlAlgorithmTest)
