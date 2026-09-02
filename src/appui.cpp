@@ -1100,10 +1100,20 @@ void HistoryChart::paintEvent(QPaintEvent *event)
     Q_UNUSED(event)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), palette().color(QPalette::Base));
+    const QString displayTheme = AppConfig::instance().general().displayTheme;
+    const bool lowLight = displayTheme == "low_light";
+    const bool highContrast = displayTheme == "high_contrast";
+    const QColor chartBackground(lowLight ? "#17232b" : "#ffffff");
+    const QColor chartText(lowLight ? "#dce5e9"
+                                   : highContrast ? "#000000" : "#555555");
+    const QColor chartGrid(lowLight ? "#40515b"
+                                   : highContrast ? "#777777" : "#dddddd");
+    const QColor chartTick(lowLight ? "#60717b"
+                                   : highContrast ? "#333333" : "#aaaaaa");
+    painter.fillRect(rect(), chartBackground);
 
     if (m_records.isEmpty()) {
-        painter.setPen(palette().color(QPalette::Text));
+        painter.setPen(chartText);
         painter.drawText(rect(), Qt::AlignCenter, QString::fromUtf8("暂无历史数据"));
         return;
     }
@@ -1177,9 +1187,9 @@ void HistoryChart::paintEvent(QPaintEvent *event)
     const int axisTickCount = qBound(2, static_cast<int>(plot.height() / 32.0), 4);
     for (int i = 0; i <= axisTickCount; ++i) {
         const qreal y = plot.bottom() - plot.height() * i / axisTickCount;
-        painter.setPen(QPen(palette().color(QPalette::Midlight), 1));
+        painter.setPen(QPen(chartGrid, 1));
         painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
-        painter.setPen(palette().color(QPalette::Text));
+        painter.setPen(chartText);
         painter.drawText(QRectF(2, y - 9, 47, 18), Qt::AlignRight | Qt::AlignVCenter,
                          QString::number(temperatureMin
                              + (temperatureMax - temperatureMin) * i / axisTickCount, 'f', 1));
@@ -1188,7 +1198,7 @@ void HistoryChart::paintEvent(QPaintEvent *event)
                          QString::number(humidityMin
                              + (humidityMax - humidityMin) * i / axisTickCount, 'f', 0));
     }
-    painter.setPen(palette().color(QPalette::Text));
+    painter.setPen(chartText);
     painter.drawText(QRectF(plot.left(), 0, 90, 18),
                      Qt::AlignLeft | Qt::AlignVCenter, QString::fromUtf8("温度 ℃"));
     painter.drawText(QRectF(plot.right() - 90, 0, 90, 18),
@@ -1199,9 +1209,9 @@ void HistoryChart::paintEvent(QPaintEvent *event)
         const int point = static_cast<int>(
             static_cast<qint64>(pointCount - 1) * i / timeTickCount);
         const qreal x = plot.left() + plot.width() * i / timeTickCount;
-        painter.setPen(QPen(palette().color(QPalette::Mid), 1));
+        painter.setPen(QPen(chartTick, 1));
         painter.drawLine(QPointF(x, plot.bottom()), QPointF(x, plot.bottom() + 4));
-        painter.setPen(palette().color(QPalette::Text));
+        painter.setPen(chartText);
         painter.drawText(QRectF(x - 45, plot.bottom() + 5, 90, timeAxisHeight - 5),
                          Qt::AlignHCenter | Qt::AlignTop,
                          recordAtPoint(point).timestamp.toString("MM-dd\nhh:mm"));
@@ -1293,13 +1303,13 @@ void HistoryChart::paintEvent(QPaintEvent *event)
             crosshairY = humidityY(averageField(
                 record.values, { "th1_humi", "th2_humi", "th3_humi" }));
         }
-        painter.setPen(QPen(palette().color(QPalette::Text), 1, Qt::DashLine));
+        painter.setPen(QPen(chartText, 1, Qt::DashLine));
         painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
         painter.drawLine(QPointF(plot.left(), crosshairY), QPointF(plot.right(), crosshairY));
 
         auto drawMarker = [&painter, x](const QColor &color, qreal y) {
             painter.setPen(QPen(color, 2));
-            painter.setBrush(palette().color(QPalette::Base));
+            painter.setBrush(chartBackground);
             painter.drawEllipse(QPointF(x, y), 4, 4);
         };
         if (record.values.contains("th1_temp") || record.values.contains("th2_temp")
