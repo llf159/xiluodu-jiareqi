@@ -45,6 +45,7 @@ public:
 
     struct GeneralConfig {
         QString dataPath;
+        QString displayTheme = "standard";
         int maxStorageMB = 12288;
         int pollIntervalMs = 1000;
         int modbusTimeoutMs = 500;
