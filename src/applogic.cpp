@@ -36,6 +36,11 @@ bool AppConfig::load(const QString &iniPath)
 
     // QSettings maps the INI section [General] to root-level keys.
     m_general.dataPath = ini.value("dataPath").toString();
+    m_general.displayTheme =
+        ini.value("displayTheme", "standard").toString().toLower();
+    if (m_general.displayTheme != "low_light"
+        && m_general.displayTheme != "high_contrast")
+        m_general.displayTheme = "standard";
     m_general.maxStorageMB = ini.value("maxStorageMB", 12288).toInt();
     m_general.pollIntervalMs = ini.value("pollIntervalMs", 1000).toInt();
     m_general.modbusTimeoutMs = ini.value("modbusTimeoutMs", 500).toInt();
@@ -181,6 +186,7 @@ bool AppConfig::save(const QString &iniPath) const
 
     // Keep these as root-level keys so they are written to [General].
     ini.setValue("dataPath", m_general.dataPath);
+    ini.setValue("displayTheme", m_general.displayTheme);
     ini.setValue("maxStorageMB", m_general.maxStorageMB);
     ini.setValue("pollIntervalMs", m_general.pollIntervalMs);
     ini.setValue("modbusTimeoutMs", m_general.modbusTimeoutMs);
