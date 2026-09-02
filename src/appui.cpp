@@ -1307,7 +1307,7 @@ void HistoryChart::paintEvent(QPaintEvent *event)
         painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
         painter.drawLine(QPointF(plot.left(), crosshairY), QPointF(plot.right(), crosshairY));
 
-        auto drawMarker = [&painter, x](const QColor &color, qreal y) {
+        auto drawMarker = [&painter, x, chartBackground](const QColor &color, qreal y) {
             painter.setPen(QPen(color, 2));
             painter.setBrush(chartBackground);
             painter.drawEllipse(QPointF(x, y), 4, 4);
