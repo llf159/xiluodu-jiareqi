@@ -195,7 +195,7 @@ private:
     QString m_loadedDevice;
 };
 
-/** 参数设置：温控阈值与 SD 卡记录周期。 */
+/** 参数设置：温控参数，其他运维项收纳在高级设置。 */
 class SettingsWidget : public QWidget
 {
     Q_OBJECT
@@ -214,6 +214,8 @@ private slots:
     void deleteOldData();
 
 private:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
     StorageRotator *m_rotator = nullptr;
     QComboBox *m_controlMode = nullptr;
     QComboBox *m_targetSource = nullptr;

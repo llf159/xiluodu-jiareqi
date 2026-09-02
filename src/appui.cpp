@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QDateEdit>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFrame>
 #include <QFontMetrics>
 #include <QGridLayout>
@@ -693,7 +694,6 @@ void AutoPanel::refreshParameters()
             .arg(config.relaySwitchIntervalSec));
     } else if (config.temperatureControlMode == "dew_point") {
         m_ruleText->setText(QString::fromUtf8(
-            "防凝露三档温控  │  露点余量 = 内部 PT100 平均值 − 最不利露点\n"
             "余量 > %1℃：关闭  │  %2～%1℃：%3  │  %4～%2℃：%5  │  ≤%4℃：两路\n"
             "切档回差 ±%6℃  │  外部温升上限 +%7℃  │  最短切换间隔 %8 秒")
             .arg(config.dewPointSingleStageMargin, 0, 'f', 1)
@@ -1626,10 +1626,20 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     m_controlMode->setCurrentIndex(modeIndex >= 0 ? modeIndex : 0);
     temperatureLayout->addLayout(parameterGrid);
 
-    m_formula = new QLabel(temperatureCard);
-    m_formula->setObjectName("formulaBox");
+    auto *formulaDetails = new QWidget(temperatureCard);
+    auto *formulaDetailsLayout = new QVBoxLayout(formulaDetails);
+    formulaDetailsLayout->setContentsMargins(0, 0, 0, 0);
+    formulaDetailsLayout->setSpacing(8);
+    m_formula = new QLabel(formulaDetails);
+    m_formula->setObjectName("formulaText");
     m_formula->setWordWrap(true);
-    temperatureLayout->addWidget(m_formula);
+    formulaDetailsLayout->addWidget(m_formula);
+    auto *formulaToggle = new QPushButton(
+        QString::fromUtf8("展开计算说明"), temperatureCard);
+    formulaToggle->setObjectName("secondaryButton");
+    formulaToggle->setCheckable(true);
+    formulaToggle->setMinimumHeight(42);
+    formulaDetails->setVisible(false);
 
     auto *condensationPanel = new QWidget(temperatureCard);
     auto *condensationLayout = new QVBoxLayout(condensationPanel);
@@ -1722,12 +1732,12 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     m_dewPointHysteresis = humidityInputs.at(3);
     m_humidityTemperatureLimit = humidityInputs.at(4);
     condensationLayout->addLayout(humidityGrid);
-    m_humidityFormula = new QLabel(condensationPanel);
-    m_humidityFormula->setObjectName("formulaBox");
+    m_humidityFormula = new QLabel(formulaDetails);
+    m_humidityFormula->setObjectName("formulaText");
     m_humidityFormula->setWordWrap(true);
-    condensationLayout->addWidget(m_humidityFormula);
-    auto *dewPointReference = new QLabel(condensationPanel);
-    dewPointReference->setObjectName("formulaBox");
+    formulaDetailsLayout->addWidget(m_humidityFormula);
+    auto *dewPointReference = new QLabel(formulaDetails);
+    dewPointReference->setObjectName("formulaText");
     dewPointReference->setWordWrap(true);
     dewPointReference->setText(QString::fromUtf8(
         "<b>露点参考</b>（空气温度 / 相对湿度 → 露点）："
@@ -1736,11 +1746,18 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
         "20 ℃/60 %RH → 约 12 ℃　│　15 ℃/60 %RH → 约 7 ℃　│　"
         "10 ℃/60 %RH → 约 3 ℃<br>"
         "空气温度越低或湿度越低，露点越低；内部 PT100 温度高于露点即可防凝露。"));
-    condensationLayout->addWidget(dewPointReference);
+    formulaDetailsLayout->addWidget(dewPointReference);
     temperatureLayout->addWidget(condensationPanel);
+    temperatureLayout->addWidget(formulaToggle);
+    temperatureLayout->addWidget(formulaDetails);
     layout->addWidget(temperatureCard);
 
-    auto *highVoltageCard = makeCard(this);
+    auto *advancedPanel = new QWidget(content);
+    auto *advancedLayout = new QVBoxLayout(advancedPanel);
+    advancedLayout->setContentsMargins(0, 0, 0, 0);
+    advancedLayout->setSpacing(10);
+
+    auto *highVoltageCard = makeCard(advancedPanel);
     auto *highVoltageLayout = new QHBoxLayout(highVoltageCard);
     highVoltageLayout->setContentsMargins(16, 10, 16, 10);
     auto *highVoltageText = new QVBoxLayout;
@@ -1845,7 +1862,7 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
         updateHighVoltageControls();
     });
     updateHighVoltageControls();
-    layout->addWidget(highVoltageCard);
+    advancedLayout->addWidget(highVoltageCard);
 
     auto makeIntegerAdjustment = [](QSpinBox *input, QWidget *parent,
                                     int inputWidth = 120) {
@@ -1871,7 +1888,7 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
         return adjustment;
     };
 
-    auto *storageCard = makeCard(this);
+    auto *storageCard = makeCard(advancedPanel);
     auto *storageLayout = new QVBoxLayout(storageCard);
     storageLayout->setContentsMargins(16, 10, 16, 10);
     storageLayout->setSpacing(7);
@@ -1936,9 +1953,9 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     deleteOld->setMinimumHeight(42);
     storageActions->addWidget(deleteOld);
     storageLayout->addLayout(storageActions);
-    layout->addWidget(storageCard);
+    advancedLayout->addWidget(storageCard);
 
-    auto *spareCard = makeCard(this);
+    auto *spareCard = makeCard(advancedPanel);
     auto *spareLayout = new QVBoxLayout(spareCard);
     spareLayout->setContentsMargins(16, 10, 16, 10);
     spareLayout->setSpacing(8);
@@ -1980,9 +1997,9 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     m_reservedInputMode->setCurrentIndex(reservedMode >= 0 ? reservedMode : 0);
     spareGrid->addWidget(m_reservedInputMode, 2, 1, 1, 3);
     spareLayout->addLayout(spareGrid);
-    layout->addWidget(spareCard);
+    advancedLayout->addWidget(spareCard);
 
-    auto *relayCard = makeCard(this);
+    auto *relayCard = makeCard(advancedPanel);
     auto *relayLayout = new QHBoxLayout(relayCard);
     relayLayout->setContentsMargins(16, 10, 16, 10);
     auto *relayText = new QVBoxLayout;
@@ -1999,12 +2016,37 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     m_relaySwitchInterval->setSuffix(QString::fromUtf8(" 秒"));
     m_relaySwitchInterval->setValue(config.relaySwitchIntervalSec);
     relayLayout->addLayout(makeIntegerAdjustment(m_relaySwitchInterval, relayCard));
-    layout->addWidget(relayCard);
+    advancedLayout->addWidget(relayCard);
+    layout->addWidget(advancedPanel);
+    advancedPanel->setVisible(false);
+
+    const QList<QWidget *> parameterControls = {
+        m_targetSource, m_controlMode, m_targetTemp,
+        m_thresholdSingleStage, m_thresholdSecondStage,
+        m_thresholdDualStage, m_thresholdHysteresis,
+        m_pidKp, m_pidKi, m_pidKd, m_pidSingleStage,
+        m_pidSecondStage, m_pidDualStage, m_pidFirstStageOutput,
+        m_dewPointSingleStage, m_dewPointSecondStage,
+        m_dewPointDualStage, m_dewPointHysteresis,
+        m_humidityTemperatureLimit, condensationOrder,
+        m_highVoltageDetectionMode, m_highVoltageDigitalTrigger,
+        m_highVoltageThreshold, m_recordInterval, m_maxStorageGB,
+        m_deleteAge, m_deleteAgeUnit, m_reservedInputMode,
+        m_relaySwitchInterval
+    };
+    for (QWidget *control : parameterControls)
+        control->installEventFilter(this);
+    for (QComboBox *combo : m_spareOutputModes)
+        combo->installEventFilter(this);
 
     auto *buttonRow = new QHBoxLayout;
     auto *rescan = new QPushButton(QString::fromUtf8("重新扫描子板"), this);
     rescan->setObjectName("secondaryButton");
     rescan->setMinimumSize(180, 48);
+    auto *advanced = new QPushButton(QString::fromUtf8("高级设置"), this);
+    advanced->setObjectName("secondaryButton");
+    advanced->setCheckable(true);
+    advanced->setMinimumSize(180, 48);
     m_actionFeedback = new QLabel(this);
     m_actionFeedback->setObjectName("actionFeedback");
     m_actionFeedback->setAlignment(Qt::AlignCenter);
@@ -2019,12 +2061,29 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     save->setObjectName("primaryButton");
     save->setMinimumSize(180, 48);
     buttonRow->addWidget(rescan);
+    buttonRow->addWidget(advanced);
     buttonRow->addWidget(m_actionFeedback, 1);
     buttonRow->addWidget(save);
     layout->addLayout(buttonRow);
 
+    connect(advanced, &QPushButton::toggled, this,
+            [advanced, advancedPanel](bool visible) {
+        advancedPanel->setVisible(visible);
+        advanced->setText(visible
+            ? QString::fromUtf8("返回参数设置")
+            : QString::fromUtf8("高级设置"));
+    });
+    connect(formulaToggle, &QPushButton::toggled, this,
+            [formulaToggle, formulaDetails](bool visible) {
+        formulaDetails->setVisible(visible);
+        formulaToggle->setText(visible
+            ? QString::fromUtf8("收起计算说明")
+            : QString::fromUtf8("展开计算说明"));
+    });
+
     auto updateFormula = [this, parameterGrid, parameterBlocks,
-                          targetSourceLabel, condensationPanel]() {
+                          targetSourceLabel, condensationPanel,
+                          dewPointReference]() {
         const double target = m_targetTemp->value();
         const QString mode = m_controlMode->currentData().toString();
         const bool pid = mode == "pid";
@@ -2052,6 +2111,9 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
                 ++position;
             }
         }
+        m_formula->setVisible(!condensation);
+        m_humidityFormula->setVisible(condensation);
+        dewPointReference->setVisible(condensation);
         if (condensation) {
             m_formula->clear();
         } else if (pid) {
@@ -2170,8 +2232,8 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
             m_pidFirstStageOutput->currentData().toString().toUpper();
         const QString secondOutput = firstOutput == "OT3" ? "OT4" : "OT3";
         m_humidityFormula->setText(QString::fromUtf8(
-            "<b>防凝露计算</b>：对三组外部温湿度分别用 Magnus 公式计算露点"
-            "露点余量 = 内部 PT100 有效平均温度 − 最不利露点。<br>"
+            "<b>防凝露计算</b>：用 Magnus 公式计算露点。<br>"
+            "露点余量 = PT100 有效平均温度 − 最不利露点。<br>"
             "余量 &gt; %1 ℃：全关　│　%2～%1 ℃：%3　│　"
             "%4～%2 ℃：%5　│　≤ %4 ℃：OT3 + OT4<br>"
             "各边界使用 ±%6 ℃回差；外部温度达到 PT100 平均值 + %7 ℃时停止加热。")
@@ -2302,6 +2364,14 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     updateHumidityFormula();
     updateDeleteReference();
     refreshStorageInfo();
+}
+
+bool SettingsWidget::eventFilter(QObject *watched, QEvent *event)
+{
+    Q_UNUSED(watched)
+    if (event->type() == QEvent::Wheel)
+        return true;
+    return QWidget::eventFilter(watched, event);
 }
 
 void SettingsWidget::saveSettings()
@@ -2511,6 +2581,8 @@ void MainWindow::setupUi()
             border-radius: 0; padding: 10px; line-height: 1.5; }
         QLabel#formulaBox { color: #333333; background: #f3f3f3; border: 1px solid #cccccc;
             border-radius: 0; padding: 11px; }
+        QLabel#formulaText { color: #666666; background: transparent; border: none;
+            padding: 0; }
         QLabel#actionFeedback { color: #c93632; font-size: 13px; font-weight: 700; padding: 3px 8px; }
         QLabel#actionFeedback[success="true"] { color: #168f4f; }
         QLabel#crosshairInfo { color: #333333; background: #f7f7f7; border: 1px solid #cccccc;
