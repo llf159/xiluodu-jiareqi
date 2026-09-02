@@ -237,6 +237,7 @@ private:
     QDoubleSpinBox *m_dewPointHysteresis = nullptr;
     QDoubleSpinBox *m_humidityTemperatureLimit = nullptr;
     QLabel *m_humidityFormula = nullptr;
+    QComboBox *m_displayTheme = nullptr;
     QComboBox *m_highVoltageDetectionMode = nullptr;
     QComboBox *m_highVoltageDigitalTrigger = nullptr;
     QDoubleSpinBox *m_highVoltageThreshold = nullptr;
