@@ -1,0 +1,440 @@
+RS485 / Modbus RTU 调试脚本使用说明
+====================================
+
+一、文件和用途
+--------------
+
+脚本名称：rs485_modbus_debug.py
+
+用途：
+1. 列出电脑上的串口设备。
+2. 扫描 Modbus RTU 从站地址。
+3. 使用功能码 0x03 读取保持寄存器。
+4. 按项目文档读取全部寄存器快照。
+5. 周期监视指定寄存器。
+6. 在明确授权和人工确认后，使用功能码 0x10 写保持寄存器。
+7. 显示原始发送帧和接收帧，检查 CRC 和异常响应。
+8. 检查寄存器值是否超出文档规定，并识别“地址 + 10”的测试数据。
+
+本项目默认通信参数：
+
+    串口：自动识别 CH340/CH341
+          Linux 常见为 /dev/ttyUSB0
+          Windows 常见为 COM3、COM4 等
+    波特率：19200
+    数据位：8
+    校验位：无（N）
+    停止位：1
+    协议：Modbus RTU
+    默认从站地址：1
+    读取功能码：0x03
+    写入功能码：0x10
+
+
+二、运行条件
+------------
+
+Linux 查看总帮助：
+
+    python3 rs485_modbus_debug.py --help
+
+Windows 查看总帮助：
+
+    py rs485_modbus_debug.py --help
+
+
+    脚本会优先自动识别 CH340/CH341 USB-RS485 转换器。如果只连接一个，
+    可以直接运行：
+
+        py rs485_modbus_debug.py snapshot
+
+    如果没有自动识别，先查看端口列表：
+
+        py rs485_modbus_debug.py ports
+
+    假设设备管理器和 ports 显示转换器为 COM3，则明确指定：
+
+        py rs485_modbus_debug.py --port COM3 snapshot
+
+    COM10、COM11 等两位数端口也直接写成 --port COM10，不需要添加其他前缀。
+
+
+    后文主要使用 Linux 命令举例。Windows 下进行如下替换即可，脚本参数不变：
+
+        Linux：  sudo python3 rs485_modbus_debug.py -v read 0x0021 5
+        Windows：py rs485_modbus_debug.py -v read 0x0021 5
+
+
+三、命令基本格式（完整参数表）
+------------------------------
+
+总格式：
+
+    python3 rs485_modbus_debug.py [全局选项] 子命令 [子命令参数]
+
+完整语法：
+
+    python3 rs485_modbus_debug.py
+        [-h]
+        [--port PORT]
+        [--baud BAUD]
+        [--timeout SEC]
+        [-v | --verbose]
+        {ports,scan,read,snapshot,monitor,write}
+        ...
+
+格式符号说明：
+
+    [内容]          表示可选，可以不写。
+    {A,B,C}         表示必须从列出的项目中选择一个。
+    A | B           表示两种等价写法任选一种，不要同时写。
+    ...             表示后面还有该子命令自己的参数，或前一项可以重复。
+    大写单词        表示需要替换成实际值，例如 PORT 要换成 /dev/ttyUSB0 或 COM3。
+
+注意：sudo 是 Linux 权限命令，不是脚本参数。Linux 需要临时串口权限时，
+可在 python3 前增加 sudo；Windows 不使用 sudo，一般使用 py 启动脚本。
+
+
+3.1 全局选项
+------------
+
+全局选项控制串口和程序输出，必须写在子命令前面：
+
+    -h, --help
+        显示脚本总帮助并退出。
+        例如：python3 rs485_modbus_debug.py --help
+
+    --port PORT
+        指定串口设备路径。
+        类型：Linux 设备路径或 Windows COM 口名称。
+        默认：自动识别 CH340/CH341。
+        Linux 自动识别失败时兼容使用 /dev/ttyUSB0。
+        Windows 自动识别失败或存在多个转换器时，要求用户明确指定。
+        Linux 示例：--port /dev/ttyUSB1
+        Windows 示例：--port COM3
+
+    --baud BAUD
+        指定串口波特率。
+        类型：大于 0 的十进制整数。
+        默认：19200
+        示例：--baud 9600
+
+    --timeout SEC
+        指定等待一帧 Modbus 响应的最长时间，单位为秒。
+        类型：大于 0 的整数或小数。
+        默认：0.35
+        示例：--timeout 1 或 --timeout 0.5
+
+    -v, --verbose
+        显示原始 TX（发送）和 RX（接收）字节。
+        -v 和 --verbose 完全等价，选择一种即可。
+        默认：不显示原始帧。
+
+完整组合示例：
+
+    sudo python3 rs485_modbus_debug.py \
+        --port /dev/ttyUSB0 --baud 19200 --timeout 0.5 -v \
+        read 0x0021 5 --slave 1
+
+Windows 等价示例（写在一行，PowerShell 和 CMD 都可使用）：
+
+    py rs485_modbus_debug.py --port COM3 --baud 19200 --timeout 0.5 -v read 0x0021 5 --slave 1
+
+说明：ports 只负责枚举电脑上的串口，不会打开 Modbus 设备，因此 --port、
+--baud、--timeout 和 -v 对 ports 的实际结果没有影响。其他五个子命令会使用
+这些全局设置。
+
+
+3.2 子命令总表
+--------------
+
+脚本必须选择以下一个子命令：
+
+    ports       列出电脑上的串口设备，不发送 Modbus 报文。
+    scan        扫描一段 Modbus 从站地址，只读。
+    read        读取任意保持寄存器，功能码 0x03。
+    snapshot    按项目文档读取全部寄存器组，只读。
+    monitor     按固定时间间隔重复读取寄存器，只读。
+    write       写一个或多个保持寄存器，功能码 0x10，危险操作。
+
+查看某个子命令自己的帮助：
+
+    python3 rs485_modbus_debug.py ports --help
+    python3 rs485_modbus_debug.py scan --help
+    python3 rs485_modbus_debug.py read --help
+    python3 rs485_modbus_debug.py snapshot --help
+    python3 rs485_modbus_debug.py monitor --help
+    python3 rs485_modbus_debug.py write --help
+
+子命令的 -h 或 --help 必须写在子命令后面，显示该子命令的帮助并退出。
+
+
+参数位置规则：
+
+1. --port、--baud、--timeout、-v/--verbose 必须在子命令前。
+2. --slave、--start-id、--end-id、--register、--interval、--iterations、
+   --allow-write、--force 必须在对应子命令后。
+3. read 和 monitor 必须填写 START、COUNT 两个位置参数。
+4. write 必须填写 START，并至少填写一个 VALUE。
+5. ports 和 snapshot 没有必须填写的位置参数。
+6. 同一个选项通常只写一次；不写时使用默认值。
+7. 只想查看帮助时不需要连接串口，也不会发送任何 Modbus 报文。
+
+
+四、ports：列出串口
+-------------------
+
+命令：
+
+    python3 rs485_modbus_debug.py ports
+
+用途：确认电脑是否识别 USB-RS485 转换器，并查看脚本是否标注
+“[自动选择]”。Linux 设备名称通常是 /dev/ttyUSB0，Windows 通常是 COM3。
+
+Linux 如果重新插拔后变成 /dev/ttyUSB1，应通过 --port 指定：
+
+    sudo python3 rs485_modbus_debug.py --port /dev/ttyUSB1 snapshot
+
+Windows 如果显示为 COM3：
+
+    py rs485_modbus_debug.py --port COM3 snapshot
+
+如果连接了多个 CH340/CH341，脚本不会随意选择其中一个，必须查看 ports
+输出后用 --port 明确指定。
+
+
+五、scan：扫描从站地址（只读）
+--------------------------------
+
+默认扫描地址 1～15，并读取每个地址的 0x0021 寄存器：
+
+    sudo python3 rs485_modbus_debug.py scan
+
+显示原始报文：
+
+    sudo python3 rs485_modbus_debug.py -v scan
+
+指定扫描范围：
+
+    sudo python3 rs485_modbus_debug.py scan --start-id 1 --end-id 20
+
+换一个用于探测的寄存器：
+
+    sudo python3 rs485_modbus_debug.py scan --register 0x0001
+
+结果说明：
+
+    “无响应”表示该地址在超时时间内没有返回数据。
+    “正常”表示收到从站响应且 CRC 正确。
+    “收到响应，但有错误”表示设备存在，但返回了 Modbus 异常或错误帧。
+
+当前现场已发现：从站 1 正常响应，从站 2～15 无响应。
+
+
+六、read：读取任意保持寄存器（只读）
+--------------------------------------
+
+格式：
+
+    sudo python3 rs485_modbus_debug.py read 起始地址 寄存器数量
+
+读取 0x0021 开始的 5 个寄存器：
+
+    sudo python3 rs485_modbus_debug.py read 0x0021 5
+
+读取温湿度传感器 1 的温度和湿度：
+
+    sudo python3 rs485_modbus_debug.py read 0x0041 2
+
+读取从站 2：
+
+    sudo python3 rs485_modbus_debug.py read 0x0021 5 --slave 2
+
+显示实际发送和接收的 Modbus RTU 帧：
+
+    sudo python3 rs485_modbus_debug.py -v read 0x0021 5
+
+输出列说明：
+
+    地址       本次读取的寄存器地址
+    十进制     16 位无符号整数的十进制显示
+    十六进制   同一个原始值的十六进制显示
+    名称/检查  文档名称以及取值范围检查结果
+
+例如：
+
+    0x0021  43  0x002B  当前加热输出 [异常：预期 0=关，1=开]
+
+表示通信和解析成功，但数值 43 不符合文档规定的 0 或 1。
+
+
+七、snapshot：读取文档中的全部寄存器组（只读）
+------------------------------------------------
+
+命令：
+
+    sudo python3 rs485_modbus_debug.py snapshot
+
+指定从站：
+
+    sudo python3 rs485_modbus_debug.py snapshot --slave 1
+
+显示全部原始报文：
+
+    sudo python3 rs485_modbus_debug.py -v snapshot
+
+该命令依次读取：
+
+    0x0001～0x0005    控制寄存器
+    0x0021～0x0025    状态寄存器
+    0x0041～0x004E    温湿度传感器及平均值
+    0x0061～0x0063    PT100 及平均值
+    0x0081～0x0088    自动控制阈值
+    0x0091～0x0094    新版文档的传感器总数和轮询间隔
+    0x00A1～0x00A2    旧版文档中的传感器数量地址
+    0x00E1           自动启停
+    0x00EE           参数保存状态
+
+如果所有返回值都满足“返回值 = 寄存器十进制地址 + 10”，脚本会提示：
+
+    机器很可能运行 Modbus 示例/测试固件。
+
+
+八、monitor：周期监视寄存器（只读）
+------------------------------------
+
+格式：
+
+    sudo python3 rs485_modbus_debug.py monitor 起始地址 数量 [选项]
+
+每秒读取一次温湿度传感器 1：
+
+    sudo python3 rs485_modbus_debug.py monitor 0x0041 2 --interval 1
+
+每 0.5 秒读取一次状态区，共读取 20 次：
+
+    sudo python3 rs485_modbus_debug.py monitor 0x0021 5 --interval 0.5 --iterations 20
+
+参数说明：
+
+    --interval SEC      两次读取之间的时间，默认 1 秒，不能小于 0.05 秒
+    --iterations COUNT  读取次数，0 表示一直运行
+    --slave ID          从站地址，默认 1
+
+一直运行时，按 Ctrl+C 停止。
+
+此命令适合观察传感器数值、开关状态或报警代码是否随现场动作发生变化。
+
+
+九、write：写保持寄存器（危险操作）
+------------------------------------
+
+警告：写寄存器可能启动加热器、风扇、蜂鸣器、自动控制或其他负载。
+未获得负责人许可、未确认现场安全、不了解寄存器含义时，不要执行 write。
+
+格式：
+
+    sudo python3 rs485_modbus_debug.py write 起始地址 写入值 [更多值] --allow-write
+
+写操作需要经过以下保护：
+
+1. 必须明确增加 --allow-write。
+2. 脚本检查文档中的只读地址和允许值。
+3. 发送前会显示目标串口、从站、地址和值。
+4. 操作者必须手工输入大写 WRITE 才会真正发送。
+5. 从站确认写入后，脚本使用 0x03 读回并核对结果。
+
+如果不加 --allow-write，脚本会拒绝写入：
+
+    错误：写操作被安全锁阻止。
+
+--force 会绕过只读地址和取值范围保护。实习调试期间不要使用 --force，
+除非固件负责人明确说明文档与实际固件不一致，并在现场监督操作。
+
+重要地址：
+
+    0x0001    手动/自动切换
+    0x0002    加热器输出
+    0x0003    风扇档位
+    0x0004    三色灯
+    0x0005    蜂鸣器
+    0x00E1    自动启动/停止
+    0x00EE    保存参数
+
+文档只读范围：
+
+    0x0021～0x0025
+    0x0041～0x004E
+    0x0061～0x0063
+
+
+十、如何理解 -v 输出
+----------------------
+
+示例发送帧：
+
+    TX: 01 03 00 21 00 05 D5 C3
+
+含义：
+
+    01       从站地址 1
+    03       读取保持寄存器
+    00 21    起始地址 0x0021
+    00 05    读取 5 个寄存器
+    D5 C3    CRC，低字节在前
+
+示例响应帧：
+
+    RX: 01 03 0A 00 2B 00 2C 00 2D 00 2E 00 2F AE 56
+
+含义：
+
+    01       从站地址 1
+    03       正常响应功能码
+    0A       后面有 10 字节寄存器数据
+    00 2B    第一个寄存器，十进制 43
+    00 2C    第二个寄存器，十进制 44
+    00 2D    第三个寄存器，十进制 45
+    00 2E    第四个寄存器，十进制 46
+    00 2F    第五个寄存器，十进制 47
+    AE 56    CRC，低字节在前
+
+Modbus 异常响应的功能码最高位为 1。例如 0x03 的异常响应功能码是 0x83：
+
+    RX: 01 83 02 CRC CRC
+
+其中异常码 02 表示“非法数据地址”。这说明通信已经建立，但固件不接受
+本次读取的寄存器地址。
+
+
+十一、保存调试日志
+------------------
+
+创建日志目录：
+
+    mkdir -p logs
+
+保存从站扫描：
+
+    sudo python3 rs485_modbus_debug.py -v scan | tee logs/01_从站扫描.txt
+
+保存完整寄存器快照：
+
+    sudo python3 rs485_modbus_debug.py -v snapshot | tee logs/02_寄存器快照.txt
+
+tee 会同时把输出显示在终端并写入文本文件，方便提交给负责人。
+
+Windows PowerShell 保存日志：
+
+    New-Item -ItemType Directory -Force logs
+
+    py rs485_modbus_debug.py -v scan |
+        Tee-Object -FilePath logs\01_从站扫描.txt
+
+    py rs485_modbus_debug.py -v snapshot |
+        Tee-Object -FilePath logs\02_寄存器快照.txt
+
+Windows CMD 没有与 tee 完全相同的内置命令。建议使用 PowerShell，或者使用
+重定向符号只保存到文件：
+
+    py rs485_modbus_debug.py -v snapshot > logs\02_寄存器快照.txt

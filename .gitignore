@@ -1,0 +1,28 @@
+# Build
+RS485Control
+build/
+build-*/
+debug/
+release/
+*.o
+*.obj
+moc_*
+ui_*
+qrc_*
+Makefile*
+*.exe
+.qmake.stash
+
+# Qt Creator
+*.user
+*.autosave
+
+# Data (runtime logs)
+data/logs/*.csv
+
+# Local device credentials
+linaro-alip设备配置记录.md
+
+# IDE
+.vs/
+.idea/
