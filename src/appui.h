@@ -4,6 +4,7 @@
 #include "applogic.h"
 #include "controlalgorithm.h"
 
+#include <QFrame>
 #include <QMainWindow>
 #include <QMap>
 #include <QPoint>
@@ -14,14 +15,64 @@
 class QComboBox;
 class QDateEdit;
 class QDoubleSpinBox;
+class QFrame;
 class QLabel;
 class QMouseEvent;
 class QPushButton;
 class QScrollBar;
+class QGridLayout;
 class QSpinBox;
 class QStackedWidget;
 class QTableWidget;
 class QTimer;
+
+/** 总览页可点击状态卡片，用富文本强调运行模式与 OT3/OT4 状态。 */
+class OverviewCard : public QFrame
+{
+    Q_OBJECT
+public:
+    explicit OverviewCard(QWidget *parent = nullptr);
+
+    QLabel *content() const { return m_content; }
+
+signals:
+    void clicked();
+
+protected:
+    void mouseReleaseEvent(QMouseEvent *event) override;
+
+private:
+    QLabel *m_content = nullptr;
+};
+
+/** 所有已发现子板的可点击状态卡片总览。 */
+class FleetOverviewPanel : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit FleetOverviewPanel(DeviceManager *manager,
+                                QWidget *parent = nullptr);
+
+    void setAutoDevices(const QSet<int> &keys);
+
+signals:
+    void deviceActivated(const DeviceProfile::DeviceKey &key);
+
+private slots:
+    void refreshDevices();
+    void refreshDevice(const DeviceProfile::DeviceKey &key);
+
+private:
+    void refreshSummary();
+    void updateCard(const DeviceState &state);
+
+    DeviceManager *m_manager = nullptr;
+    QLabel *m_summary = nullptr;
+    QWidget *m_cardContainer = nullptr;
+    QGridLayout *m_cardGrid = nullptr;
+    QMap<int, OverviewCard *> m_cards;
+    QSet<int> m_autoDevices;
+};
 
 /** 手动和自动页共用的子板选择与传感器数据卡片。 */
 class DeviceOverviewWidget : public QWidget
@@ -61,11 +112,14 @@ public:
 
     DeviceProfile::DeviceKey currentDevice() const;
     void setCurrentDevice(const DeviceProfile::DeviceKey &key);
+    void setAutoDevices(const QSet<int> &keys);
+    void refreshParameters();
     void refreshSettings();
 
 signals:
     void writeRequested(const DeviceProfile::DeviceKey &key,
                         const QMap<QString, QVariant> &fields);
+    void runningChanged(const DeviceProfile::DeviceKey &key, bool running);
 
 private slots:
     void refreshControls();
@@ -75,9 +129,16 @@ private:
     DeviceManager *m_manager = nullptr;
     DeviceOverviewWidget *m_overview = nullptr;
     QLabel *m_operationBanner = nullptr;
+    QLabel *m_runState = nullptr;
+    QLabel *m_workState = nullptr;
+    QLabel *m_averageTemp = nullptr;
+    QLabel *m_autoSummary = nullptr;
+    QPushButton *m_start = nullptr;
+    QPushButton *m_stop = nullptr;
     QPushButton *m_ot3 = nullptr;
     QPushButton *m_ot4 = nullptr;
     QMap<QString, QPushButton *> m_spareOutputs;
+    QSet<int> m_autoDevices;
 };
 
 /** 自动运行：状态监视、阈值摘要和启停。 */
@@ -269,7 +330,7 @@ private slots:
     void switchPage(int index);
     void writeToDevice(const DeviceProfile::DeviceKey &key,
                        const QMap<QString, QVariant> &fields);
-    void setAutomaticRunning(bool running);
+    void setDeviceAutoRunning(const DeviceProfile::DeviceKey &key, bool running);
     void onDeviceUpdated(const DeviceProfile::DeviceKey &key);
     void onWriteCompleted(const DeviceProfile::DeviceKey &key,
                           bool success,
@@ -281,7 +342,8 @@ private slots:
 private:
     void setupUi();
     void startServices();
-    void setAllIndicatorLights(int green, int yellow, int red, int buzzer);
+    void refreshIndicatorLights();
+    void syncAutoPanels();
     void applyAutomaticControl(const DeviceProfile::DeviceKey &key);
     void enterHighVoltageAlarm();
     void leaveHighVoltageAlarm();
@@ -290,10 +352,10 @@ private:
     void enterSensorFault(const DeviceProfile::DeviceKey &key,
                           const QString &reason);
     void leaveSensorFault(const DeviceProfile::DeviceKey &key);
-    void stopAllControlledOutputs();
     void initializeSafeOutputs(const DeviceProfile::DeviceKey &key);
     void refreshHighVoltageAlarm();
-    void addConfiguredSpareOutputs(QMap<QString, QVariant> &fields,
+    void addConfiguredSpareOutputs(const DeviceProfile::DeviceKey &key,
+                                   QMap<QString, QVariant> &fields,
                                    const QMap<QString, QVariant> &currentValues =
                                        QMap<QString, QVariant>(),
                                    bool initializeManual = false) const;
@@ -312,8 +374,8 @@ private:
 
     QStackedWidget *m_pages = nullptr;
     QVector<QPushButton *> m_navigation;
+    FleetOverviewPanel *m_fleetOverview = nullptr;
     ManualPanel *m_manualPanel = nullptr;
-    AutoPanel *m_autoPanel = nullptr;
     SettingsWidget *m_settingsWidget = nullptr;
     HistoryWidget *m_historyWidget = nullptr;
     QLabel *m_pageTitle = nullptr;
@@ -321,7 +383,7 @@ private:
     QLabel *m_systemState = nullptr;
     QLabel *m_selfCheckNotice = nullptr;
     QLabel *m_statusBar = nullptr;
-    bool m_autoRunning = false;
+    QSet<int> m_autoDevices;
     bool m_highVoltageAlarm = false;
     bool m_schedulerFault = false;
     QString m_configError;

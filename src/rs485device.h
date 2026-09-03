@@ -244,6 +244,7 @@ signals:
 private slots:
     void onPollTimer();
     void processQueue();
+    void onSerialError(QSerialPort::SerialPortError error);
 
 private:
     ModbusRtu::Result transact(const QByteArray &request, quint8 expectedFc,
@@ -268,6 +269,8 @@ private:
     QQueue<QueueItem> m_queue;
     QMutex m_queueMutex;
     bool m_busy = false;
+    bool m_reopenPending = false;   // 底层失效, 待 closePort+openPort 恢复
+    bool m_portAnnounced = false;   // 串口不可用提示只报状态变化, 不重复刷屏
     int m_nextDiscoverySlaveId = 1;
     QByteArray m_rxBuffer;
 };

@@ -20,6 +20,10 @@ Makefile*
 # Data (runtime logs)
 data/logs/*.csv
 
+# Simulator runtime (PTY links / generated config / sim.log)
+tests/simulator/run/
+tests/simulator/__pycache__/
+
 # Local device credentials
 linaro-alip设备配置记录.md
 

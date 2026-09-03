@@ -382,6 +382,8 @@ SerialPortWorker::SerialPortWorker(const PortSettings &settings, QObject *parent
     , m_settings(settings)
 {
     m_serial = new QSerialPort(this);
+    connect(m_serial, &QSerialPort::errorOccurred, this,
+            &SerialPortWorker::onSerialError);
     m_pollTimer = new QTimer(this);
     m_pollTimer->setSingleShot(false);
     connect(m_pollTimer, &QTimer::timeout, this, &SerialPortWorker::onPollTimer);
@@ -401,8 +403,10 @@ void SerialPortWorker::startWork()
     if (!openPort()) {
         emit portError(m_settings.portIndex,
                        QString::fromUtf8("无法打开串口: %1").arg(m_settings.device));
+        m_portAnnounced = true;
         return;
     }
+    m_portAnnounced = false;
 }
 
 void SerialPortWorker::stopWork()
@@ -514,6 +518,26 @@ void SerialPortWorker::onPollTimer()
 
 void SerialPortWorker::processQueue()
 {
+    // 串口断开 (启动过早/拔插/对端退出): 自动重开, 2 秒退避后重试。
+    // 必须在取任务之前处理, 队列里的写任务才不会因提前返回而丢失。
+    if (m_reopenPending) {
+        m_reopenPending = false;
+        closePort();
+    }
+    if (!m_serial->isOpen()) {
+        if (!openPort()) {
+            if (!m_portAnnounced) {
+                m_portAnnounced = true;
+                emit portError(m_settings.portIndex,
+                               QString::fromUtf8("无法打开串口: %1")
+                                   .arg(m_settings.device));
+            }
+            m_queueTimer->start(2000);
+            return;
+        }
+        m_portAnnounced = false;
+    }
+
     QueueItem item;
     {
         QMutexLocker lock(&m_queueMutex);
@@ -652,6 +676,8 @@ ModbusRtu::Result SerialPortWorker::transact(const QByteArray &request,
     QThread::msleep(static_cast<unsigned long>(m_settings.frameDelayMs));
 
     if (m_serial->write(request) != request.size()) {
+        // 底层失效 (对端退出/拔插): 标记重开, 由 processQueue 恢复
+        m_reopenPending = true;
         result.error = QString::fromUtf8("发送失败");
         return result;
     }
@@ -711,4 +737,19 @@ void SerialPortWorker::closePort()
 {
     if (m_serial->isOpen())
         m_serial->close();
+}
+
+void SerialPortWorker::onSerialError(QSerialPort::SerialPortError error)
+{
+    // 设备级失效 (USB 拔插/PTY 对端退出) 触发重开;
+    // 常规超时等错误走正常事务失败路径, 不在这里处理
+    switch (error) {
+    case QSerialPort::ResourceError:
+    case QSerialPort::DeviceNotFoundError:
+    case QSerialPort::PermissionError:
+        m_reopenPending = true;
+        break;
+    default:
+        break;
+    }
 }

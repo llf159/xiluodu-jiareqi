@@ -182,6 +182,23 @@ bool hasHighVoltage(const QMap<QString, QVariant> &values)
             > config.highVoltageThreshold;
 }
 
+bool hasReservedInputInterlock(const QMap<QString, QVariant> &values)
+{
+    const QString mode = AppConfig::instance().general().reservedInputMode;
+    if (mode == "monitor" || !values.contains("reserved"))
+        return false;
+    const int value = values.value("reserved").toInt();
+    return mode == "interlock_high" ? value != 0 : value == 0;
+}
+
+bool hasDeviceAlarm(const QMap<QString, QVariant> &values)
+{
+    return hasHighVoltage(values) || hasReservedInputInterlock(values)
+        || ControlAlgorithm::checkTemperatureHumidity(
+               values, ControlAlgorithm::SensorLimits()).state
+            == ControlAlgorithm::SensorCheck::Fault;
+}
+
 int commandKey(const DeviceProfile::DeviceKey &key)
 {
     return key.portIndex * 256 + key.slaveId;
@@ -280,6 +297,13 @@ QString applicationStyleSheet(const QString &themeName)
         QLabel#runState { color: #555555; background: #eeeeee; border: 1px solid #cccccc;
             border-radius: 0; font-weight: 700; }
         QLabel#runState[running="true"] { color: white; background: #168f4f; border-color: #107b43; }
+        QLabel#fleetSummary { color: #555555; font-size: 14px; }
+        QFrame#deviceCard { background: white; color: #202020; border: 1px solid #bbbbbb;
+            border-left: 5px solid #168f4f; border-radius: 0; }
+        QFrame#deviceCard:hover { background: #f4f8fb; border-color: #1976d2; }
+        QFrame#deviceCard[online="false"] { color: #777777; border-left-color: #888888; }
+        QFrame#deviceCard[alarm="true"] { color: #9f201d; background: #fdeceb;
+            border-color: #e5a3a0; border-left-color: #c93632; }
         QComboBox, QDateEdit, QSpinBox, QDoubleSpinBox { background: white; border: 1px solid #aaaaaa;
             border-radius: 0; padding: 6px 10px; font-size: 14px; }
         QComboBox:focus { border: 2px solid #1976d2; }
@@ -301,8 +325,9 @@ QString applicationStyleSheet(const QString &themeName)
         QPushButton#dangerButton { color: white; background: #c93632; border: 1px solid #ad2825; font-weight: 700; }
         QPushButton#dangerButton:disabled { color: #999999; background: #eeeeee; border-color: #cccccc; }
         QPushButton#outputButton { color: #333333; background: #eeeeee; border: 1px solid #bbbbbb; font-weight: 700; }
+        QPushButton#outputButton:disabled { color: #999999; background: #eeeeee; border-color: #cccccc; }
         QPushButton#outputButton[outputOn="true"] { color: white; background: #168f4f; border-color: #107b43; }
-        QPushButton#outputButton:disabled { color: #c93632; background: #fdeceb; border-color: #e5a3a0; }
+        QPushButton#outputButton[locked="true"] { color: #c93632; background: #fdeceb; border-color: #e5a3a0; }
         QPushButton#adjustButton { color: #222222; background: #f1f1f1; border: 1px solid #aaaaaa;
             font-size: 24px; font-weight: 700; }
         QPushButton#adjustButton:pressed { color: white; background: #333333; }
@@ -360,6 +385,13 @@ QString applicationStyleSheet(const QString &themeName)
             border-color: #55b9e8; }
         QPushButton#outputButton, QPushButton#adjustButton {
             color: #eef3f5; background: #24343e; border-color: #657680; }
+        QPushButton#outputButton:disabled { color: #6d7d87; background: #162027;
+            border-color: #3c4c56; }
+        QFrame#deviceCard { background: #17232b; color: #eef3f5; border-color: #4b5c66; }
+        QFrame#deviceCard:hover { background: #1e2e38; border-color: #55b9e8; }
+        QFrame#deviceCard[online="false"] { color: #8a99a2; border-left-color: #556066; }
+        QFrame#deviceCard[alarm="true"] { color: #ff8a85; background: #3a1a18;
+            border-color: #7a4440; border-left-color: #c93632; }
         QPushButton#adjustButton:pressed { background: #287eaa; }
         QScrollBar:vertical, QScrollBar:horizontal {
             background: #18262f; border-color: #4b5c66; }
@@ -397,6 +429,12 @@ QString applicationStyleSheet(const QString &themeName)
         QPushButton#secondaryButton:checked { color: white; background: black; }
         QPushButton#outputButton, QPushButton#adjustButton {
             color: black; background: white; border: 2px solid black; }
+        QFrame#deviceCard { background: white; color: black; border: 2px solid #444444;
+            border-left: 6px solid #168f4f; }
+        QFrame#deviceCard:hover { background: #ffffcc; border-color: black; }
+        QFrame#deviceCard[online="false"] { color: #555555; border-left-color: #777777; }
+        QFrame#deviceCard[alarm="true"] { color: black; background: #ffdddd;
+            border: 2px solid black; border-left: 6px solid #c93632; }
         QPushButton#adjustButton:pressed { color: white; background: black; }
         QTableWidget { color: black; background: white; alternate-background-color: #eeeeee;
             border: 2px solid black; gridline-color: #666666; }
@@ -419,6 +457,244 @@ void applyApplicationTheme(const QString &themeName)
 } // namespace
 
 // ============================================================
+// OverviewCard
+// ============================================================
+
+OverviewCard::OverviewCard(QWidget *parent)
+    : QFrame(parent)
+{
+    setObjectName("deviceCard");
+    setCursor(Qt::PointingHandCursor);
+    setMinimumHeight(150);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(14, 10, 14, 10);
+    m_content = new QLabel(this);
+    m_content->setTextFormat(Qt::RichText);
+    m_content->setWordWrap(true);
+    // 富文本 QLabel 内部的文本控件会吞掉鼠标事件, 导致卡片收不到
+    // 点击; 设为鼠标透明后事件直达 QFrame, 由 mouseReleaseEvent 响应。
+    m_content->setAttribute(Qt::WA_TransparentForMouseEvents);
+    layout->addWidget(m_content);
+}
+
+void OverviewCard::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && rect().contains(event->pos()))
+        emit clicked();
+    QFrame::mouseReleaseEvent(event);
+}
+
+// ============================================================
+// FleetOverviewPanel
+// ============================================================
+
+FleetOverviewPanel::FleetOverviewPanel(DeviceManager *manager, QWidget *parent)
+    : QWidget(parent)
+    , m_manager(manager)
+{
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(10);
+
+    auto *header = makeCard(this);
+    auto *headerLayout = new QHBoxLayout(header);
+    headerLayout->setContentsMargins(16, 10, 16, 10);
+    auto *hint = new QLabel(
+        QString::fromUtf8("点击任意子板卡片进入详细控制"), header);
+    hint->setObjectName("sectionTitle");
+    headerLayout->addWidget(hint);
+    headerLayout->addStretch();
+    m_summary = new QLabel(header);
+    m_summary->setObjectName("fleetSummary");
+    headerLayout->addWidget(m_summary);
+    layout->addWidget(header);
+
+    auto *scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_cardContainer = new QWidget(scroll);
+    m_cardGrid = new QGridLayout(m_cardContainer);
+    m_cardGrid->setContentsMargins(0, 0, 0, 0);
+    m_cardGrid->setHorizontalSpacing(10);
+    m_cardGrid->setVerticalSpacing(10);
+    m_cardGrid->setColumnStretch(0, 1);
+    m_cardGrid->setColumnStretch(1, 1);
+    m_cardGrid->setRowStretch(0, 0);
+    scroll->setWidget(m_cardContainer);
+    layout->addWidget(scroll, 1);
+
+    connect(m_manager, &DeviceManager::devicesChanged,
+            this, &FleetOverviewPanel::refreshDevices);
+    connect(m_manager, &DeviceManager::deviceUpdated,
+            this, &FleetOverviewPanel::refreshDevice);
+    refreshDevices();
+}
+
+void FleetOverviewPanel::refreshSummary()
+{
+    const QList<DeviceState> devices = m_manager->allDevices();
+    int onlineCount = 0;
+    int alarmCount = 0;
+    for (const DeviceState &state : devices) {
+        if (state.online)
+            ++onlineCount;
+        if (hasDeviceAlarm(state.values))
+            ++alarmCount;
+    }
+    m_summary->setText(QString::fromUtf8("共 %1 块  ·  在线 %2  ·  告警 %3")
+                           .arg(devices.size()).arg(onlineCount).arg(alarmCount));
+}
+
+void FleetOverviewPanel::refreshDevices()
+{
+    while (QLayoutItem *item = m_cardGrid->takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+    for (int row = 0; row <= 16; ++row)
+        m_cardGrid->setRowStretch(row, 0);
+    m_cards.clear();
+    const QList<DeviceState> devices = m_manager->allDevices();
+    for (int index = 0; index < devices.size(); ++index) {
+        const DeviceState &state = devices.at(index);
+        auto *card = new OverviewCard(m_cardContainer);
+        m_cardGrid->addWidget(card, index / 2, index % 2);
+        m_cards[commandKey(state.key)] = card;
+        connect(card, &OverviewCard::clicked, this, [this, state]() {
+            emit deviceActivated(state.key);
+        });
+        updateCard(state);
+    }
+    if (devices.isEmpty()) {
+        auto *empty = new QLabel(
+            QString::fromUtf8("正在搜索子板…\n发现后将在此显示状态卡片"),
+            m_cardContainer);
+        empty->setObjectName("mutedText");
+        empty->setAlignment(Qt::AlignCenter);
+        m_cardGrid->addWidget(empty, 0, 0, 1, 2);
+    }
+    m_cardGrid->setRowStretch((devices.size() + 1) / 2, 1);
+    refreshSummary();
+}
+
+void FleetOverviewPanel::refreshDevice(const DeviceProfile::DeviceKey &key)
+{
+    if (!m_cards.contains(commandKey(key)))
+        return;
+    updateCard(m_manager->device(key));
+    refreshSummary();
+}
+
+void FleetOverviewPanel::setAutoDevices(const QSet<int> &keys)
+{
+    if (m_autoDevices == keys)
+        return;
+    m_autoDevices = keys;
+    const QList<DeviceState> devices = m_manager->allDevices();
+    for (const DeviceState &state : devices)
+        updateCard(state);
+}
+
+void FleetOverviewPanel::updateCard(const DeviceState &state)
+{
+    OverviewCard *card = m_cards.value(commandKey(state.key));
+    if (!card)
+        return;
+    const QMap<QString, QVariant> &values = state.values;
+    const bool highVoltage = hasHighVoltage(values);
+    const ControlAlgorithm::SensorCheck sensorCheck =
+        ControlAlgorithm::checkTemperatureHumidity(
+            values, ControlAlgorithm::SensorLimits());
+    const bool sensorFault = sensorCheck.state == ControlAlgorithm::SensorCheck::Fault;
+    const bool reservedAlarm = hasReservedInputInterlock(values);
+    const QString alarmColor = QStringLiteral("#c93632");
+    const QString runColor = QStringLiteral("#168f4f");
+    const QString manualColor = QStringLiteral("#146b97");
+    const QString stateText = !state.online
+        ? QString::fromUtf8("● 离线")
+        : highVoltage
+            ? QString::fromUtf8("<b style=\"color:%1;\">⚠ 高压告警</b>").arg(alarmColor)
+        : reservedAlarm
+            ? QString::fromUtf8("<b style=\"color:%1;\">⚠ 备用输入联锁</b>").arg(alarmColor)
+        : sensorFault
+            ? QString::fromUtf8("<b style=\"color:%1;\">⚠ 传感器异常</b>").arg(alarmColor)
+            : QString::fromUtf8("<b style=\"color:%1;\">● 在线</b>").arg(runColor);
+    const bool hasTemperature = values.contains("th1_temp")
+        || values.contains("th2_temp") || values.contains("th3_temp");
+    const bool hasHumidity = values.contains("th1_humi")
+        || values.contains("th2_humi") || values.contains("th3_humi");
+    const bool hasPt100 = values.contains("pt1_temp") || values.contains("pt2_temp");
+    const QString temperature = hasTemperature
+        ? QString::number(averageField(
+              values, { "th1_temp", "th2_temp", "th3_temp" }), 'f', 1) + " ℃"
+        : "--.- ℃";
+    const QString humidity = hasHumidity
+        ? QString::number(averageField(
+              values, { "th1_humi", "th2_humi", "th3_humi" }), 'f', 1) + " %RH"
+        : "--.- %RH";
+    const QString pt100 = hasPt100
+        ? QString::number(averageField(values, { "pt1_temp", "pt2_temp" }), 'f', 1)
+              + " ℃"
+        : "--.- ℃";
+    const int ot3 = values.value("ot03").toInt();
+    const int ot4 = values.value("ot04").toInt();
+    const bool deviceAuto = m_autoDevices.contains(commandKey(state.key));
+    const QString modeText = !state.online
+        ? QString::fromUtf8("--")
+        : deviceAuto
+            ? QString::fromUtf8("<b style=\"font-size:17px; color:%1;\">● 自动温控</b>")
+                  .arg(runColor)
+            : QString::fromUtf8("<b style=\"font-size:17px; color:%1;\">● 手动</b>")
+                  .arg(manualColor);
+    const QString stageText = !state.online ? QString::fromUtf8("--")
+        : ot3 && ot4 ? QString::fromUtf8("两档")
+        : ot3 ? QString::fromUtf8("一档（OT3）")
+        : ot4 ? QString::fromUtf8("一档（OT4）")
+              : QString::fromUtf8("关闭");
+    QString mainOutputHtml;
+    for (int output : { 3, 4 }) {
+        const QString field = QString("ot%1").arg(output, 2, 10, QChar('0'));
+        const bool on = values.contains(field) && values.value(field).toInt() != 0;
+        const QString mark = on
+            ? QString::fromUtf8("<b style=\"font-size:17px; color:%1;\">● 打开</b>")
+                  .arg(runColor)
+            : QString::fromUtf8("<b style=\"font-size:17px;\">○ 关闭</b>");
+        if (!mainOutputHtml.isEmpty())
+            mainOutputHtml += QString::fromUtf8("　　");
+        mainOutputHtml += QString::fromUtf8("<b style=\"font-size:17px;\">OT%1</b> %2")
+                              .arg(output).arg(mark);
+    }
+    QStringList spareStates;
+    for (int output : { 1, 2, 5, 6 }) {
+        const QString field = QString("ot%1").arg(output, 2, 10, QChar('0'));
+        spareStates.append(QString("OT%1 %2").arg(output).arg(
+            values.contains(field) ? QString::number(values.value(field).toInt()) : "--"));
+    }
+    card->content()->setText(QString::fromUtf8(
+        "<b>串口 %1  ·  子板 ID %2</b>　%3<br/>"
+        "%4　<b style=\"font-size:17px;\">当前 %5</b><br/>"
+        "%6<br/>"
+        "温湿度  %7  /  %8　　PT100  %9<br/>"
+        "高压  %10 V　备用输入  %11　%12")
+        .arg(state.key.portIndex + 1).arg(state.key.slaveId).arg(stateText)
+        .arg(modeText, stageText)
+        .arg(mainOutputHtml)
+        .arg(temperature, humidity, pt100)
+        .arg(values.contains("external_voltage")
+                 ? QString::number(values.value("external_voltage").toInt() / 10.0,
+                                   'f', 1)
+                 : "--.-")
+        .arg(values.contains("reserved")
+                 ? QString::number(values.value("reserved").toInt()) : "--")
+        .arg(spareStates.join("  ")));
+    card->setProperty("online", state.online);
+    card->setProperty("alarm", hasDeviceAlarm(values));
+    refreshDynamicStyle(card);
+}
+
+// ============================================================
 // DeviceOverviewWidget
 // ============================================================
 
@@ -433,12 +709,12 @@ DeviceOverviewWidget::DeviceOverviewWidget(DeviceManager *manager, QWidget *pare
     auto *selectorCard = makeCard(this);
     auto *selector = new QHBoxLayout(selectorCard);
     selector->setContentsMargins(16, 10, 16, 10);
-    m_deviceTitle = new QLabel(QString::fromUtf8("当前子板（已发现 0 块）"), selectorCard);
+    m_deviceTitle = new QLabel(QString::fromUtf8("子板（0 块）"), selectorCard);
     selector->addWidget(m_deviceTitle);
     m_deviceBox = new QComboBox(selectorCard);
     configureDeviceCombo(m_deviceBox);
     m_deviceBox->setMinimumHeight(42);
-    m_deviceBox->setMinimumWidth(210);
+    m_deviceBox->setMinimumWidth(160);
     selector->addWidget(m_deviceBox);
     selector->addStretch();
     m_linkState = new QLabel(QString::fromUtf8("等待连接"), selectorCard);
@@ -538,7 +814,7 @@ void DeviceOverviewWidget::refreshDevices()
 {
     const DeviceProfile::DeviceKey previous = currentDevice();
     const QList<DeviceState> devices = m_manager->allDevices();
-    m_deviceTitle->setText(QString::fromUtf8("当前子板（已发现 %1 块）")
+    m_deviceTitle->setText(QString::fromUtf8("子板（%1 块）")
                                .arg(devices.size()));
     m_deviceBox->blockSignals(true);
     m_deviceBox->clear();
@@ -600,37 +876,76 @@ ManualPanel::ManualPanel(DeviceManager *manager, QWidget *parent)
     m_overview = new DeviceOverviewWidget(manager, this);
     layout->addWidget(m_overview, 7);
 
-    auto *controlCard = makeCard(this);
+    auto *controlScroll = new QScrollArea(this);
+    controlScroll->setWidgetResizable(true);
+    controlScroll->setFrameShape(QFrame::NoFrame);
+    controlScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    controlScroll->verticalScrollBar()->setStyleSheet(
+        "QScrollBar:vertical { width: 36px; }"
+        "QScrollBar::handle:vertical { min-height: 72px; margin: 2px 4px; }");
+    auto *controlCard = makeCard(controlScroll);
     controlCard->setMinimumWidth(230);
     auto *controls = new QVBoxLayout(controlCard);
-    controls->setContentsMargins(18, 18, 18, 18);
-    controls->setSpacing(12);
+    controls->setContentsMargins(12, 10, 12, 10);
+    controls->setSpacing(7);
+
+    auto *autoTitle = new QLabel(QString::fromUtf8("自动温控"), controlCard);
+    autoTitle->setObjectName("sectionTitle");
+    controls->addWidget(autoTitle);
+    auto *autoStateRow = new QHBoxLayout;
+    m_runState = new QLabel(QString::fromUtf8("●  程序未启动"), controlCard);
+    m_runState->setObjectName("runState");
+    m_runState->setAlignment(Qt::AlignCenter);
+    m_runState->setMinimumHeight(34);
+    autoStateRow->addWidget(m_runState, 1);
+    m_averageTemp = new QLabel("--.- ℃", controlCard);
+    m_averageTemp->setObjectName("metricValueSmall");
+    m_averageTemp->setAlignment(Qt::AlignCenter);
+    autoStateRow->addWidget(m_averageTemp);
+    controls->addLayout(autoStateRow);
+
+    m_workState = new QLabel(QString::fromUtf8("当前：已停止"), controlCard);
+    m_workState->setObjectName("mutedText");
+    controls->addWidget(m_workState);
+    m_autoSummary = new QLabel(controlCard);
+    m_autoSummary->setObjectName("mutedText");
+    m_autoSummary->setWordWrap(true);
+    controls->addWidget(m_autoSummary);
+
+    auto *autoButtons = new QHBoxLayout;
+    m_start = new QPushButton(QString::fromUtf8("启动自动"), controlCard);
+    m_stop = new QPushButton(QString::fromUtf8("停止自动"), controlCard);
+    m_start->setObjectName("startButton");
+    m_stop->setObjectName("dangerButton");
+    m_start->setMinimumHeight(42);
+    m_stop->setMinimumHeight(42);
+    autoButtons->addWidget(m_start);
+    autoButtons->addWidget(m_stop);
+    controls->addLayout(autoButtons);
+
     auto *title = new QLabel(QString::fromUtf8("手动输出"), controlCard);
     title->setObjectName("sectionTitle");
     controls->addWidget(title);
-    auto *description = new QLabel(
-        QString::fromUtf8("直接控制当前子板的加热回路"), controlCard);
-    description->setObjectName("mutedText");
-    description->setWordWrap(true);
-    controls->addWidget(description);
 
     m_operationBanner = new QLabel(
         QString::fromUtf8("●  外部电压未超阈值\n可以操作"), controlCard);
     m_operationBanner->setObjectName("safeBanner");
-    m_operationBanner->setMinimumHeight(54);
+    m_operationBanner->setMinimumHeight(40);
     m_operationBanner->setAlignment(Qt::AlignCenter);
     m_operationBanner->setWordWrap(true);
     controls->addWidget(m_operationBanner);
 
     m_ot3 = new QPushButton(QString::fromUtf8("OT3  回路一\n关闭"), controlCard);
     m_ot4 = new QPushButton(QString::fromUtf8("OT4  回路二\n关闭"), controlCard);
+    auto *controlledOutputs = new QHBoxLayout;
     for (QPushButton *button : { m_ot3, m_ot4 }) {
         button->setObjectName("outputButton");
         button->setCheckable(true);
-        button->setMinimumHeight(82);
-        controls->addWidget(button);
+        button->setMinimumHeight(58);
+        controlledOutputs->addWidget(button);
         connect(button, &QPushButton::clicked, this, &ManualPanel::toggleOutput);
     }
+    controls->addLayout(controlledOutputs);
     m_ot3->setProperty("outputField", "ot03");
     m_ot4->setProperty("outputField", "ot04");
 
@@ -645,7 +960,7 @@ ManualPanel::ManualPanel(DeviceManager *manager, QWidget *parent)
         auto *button = new QPushButton(controlCard);
         button->setObjectName("outputButton");
         button->setCheckable(true);
-        button->setMinimumHeight(52);
+        button->setMinimumHeight(42);
         button->setProperty("outputField", field);
         m_spareOutputs[field] = button;
         spareGrid->addWidget(button, i / 2, i % 2);
@@ -654,7 +969,8 @@ ManualPanel::ManualPanel(DeviceManager *manager, QWidget *parent)
     controls->addLayout(spareGrid);
 
     controls->addStretch();
-    layout->addWidget(controlCard, 3);
+    controlScroll->setWidget(controlCard);
+    layout->addWidget(controlScroll, 3);
 
     connect(m_overview, &DeviceOverviewWidget::currentDeviceChanged,
             this, &ManualPanel::refreshControls);
@@ -662,7 +978,12 @@ ManualPanel::ManualPanel(DeviceManager *manager, QWidget *parent)
             this, [this](const DeviceProfile::DeviceKey &key) {
         if (key == currentDevice())
             refreshControls();
-    });
+            });
+    connect(m_start, &QPushButton::clicked,
+            this, [this]() { emit runningChanged(currentDevice(), true); });
+    connect(m_stop, &QPushButton::clicked,
+            this, [this]() { emit runningChanged(currentDevice(), false); });
+    refreshParameters();
     refreshControls();
 }
 
@@ -676,8 +997,36 @@ void ManualPanel::setCurrentDevice(const DeviceProfile::DeviceKey &key)
     m_overview->selectDevice(key);
 }
 
+void ManualPanel::setAutoDevices(const QSet<int> &keys)
+{
+    if (m_autoDevices == keys)
+        return;
+    m_autoDevices = keys;
+    refreshControls();
+}
+
+void ManualPanel::refreshParameters()
+{
+    const AppConfig::GeneralConfig &config = AppConfig::instance().general();
+    const QString mode = config.temperatureControlMode == "pid"
+        ? QString::fromUtf8("PID 三档")
+        : config.temperatureControlMode == "dew_point"
+            ? QString::fromUtf8("防凝露三档")
+            : QString::fromUtf8("阈值三档");
+    const QString target = config.temperatureControlMode == "dew_point"
+        ? QString::fromUtf8("按露点余量控制")
+        : config.temperatureTargetSource == "fixed"
+            ? QString::fromUtf8("目标 %1 ℃")
+                  .arg(config.temperatureTarget, 0, 'f', 1)
+            : QString::fromUtf8("目标跟随 PT100");
+    m_autoSummary->setText(QString::fromUtf8("%1 · %2 · 切换间隔 %3 秒")
+                               .arg(mode, target)
+                               .arg(config.relaySwitchIntervalSec));
+}
+
 void ManualPanel::refreshSettings()
 {
+    refreshParameters();
     refreshControls();
 }
 
@@ -690,25 +1039,64 @@ void ManualPanel::refreshControls()
         ? "hv_input" : "external_voltage";
     const bool ready = state.online && state.values.contains(highVoltageField);
     const bool locked = hasHighVoltage(state.values);
-    m_operationBanner->setText(!ready
+    const bool deviceAuto = m_autoDevices.contains(commandKey(currentDevice()));
+
+    m_runState->setText(deviceAuto
+        ? QString::fromUtf8("●  自动温控运行中")
+        : QString::fromUtf8("●  手动模式"));
+    m_runState->setProperty("running", deviceAuto);
+    m_start->setEnabled(!deviceAuto);
+    m_stop->setEnabled(deviceAuto);
+    refreshDynamicStyle(m_runState);
+
+    m_operationBanner->setText(deviceAuto
+        ? QString::fromUtf8("●  本子板自动温控运行中\n停止后可手动操作 OT3 / OT4")
+        : !ready
         ? QString::fromUtf8("●  等待子板完整数据\n暂不可操作")
         : locked
             ? (digitalHighVoltage
                    ? QString::fromUtf8("⚠  高压数字信号已触发\n禁止操作 OT3 / OT4")
                    : QString::fromUtf8("⚠  外部电压超过阈值\n禁止操作 OT3 / OT4"))
             : (digitalHighVoltage
-                   ? QString::fromUtf8("●  高压数字信号未触发\n可以操作")
-                   : QString::fromUtf8("●  外部电压未超阈值\n可以操作")));
-    m_operationBanner->setProperty("alarm", ready && locked);
+                    ? QString::fromUtf8("●  高压数字信号未触发\n可以操作")
+                    : QString::fromUtf8("●  外部电压未超阈值\n可以操作")));
+    m_operationBanner->setProperty("alarm", !deviceAuto && ready && locked);
     refreshDynamicStyle(m_operationBanner);
+
+    if (deviceAuto) {
+        m_workState->setText(QString::fromUtf8("当前：自动温控"));
+    } else if (!state.online) {
+        m_workState->setText(QString::fromUtf8("当前：等待子板在线"));
+    } else if (!state.values.contains("th1_temp")
+               || !state.values.contains("th2_temp")
+               || !state.values.contains("th3_temp")) {
+        m_workState->setText(QString::fromUtf8("当前：等待温度数据"));
+    } else if (state.values.value("ot03").toInt()
+               && state.values.value("ot04").toInt()) {
+        m_workState->setText(QString::fromUtf8("当前：两路输出"));
+    } else if (state.values.value("ot03").toInt()) {
+        m_workState->setText(QString::fromUtf8("当前：OT3 输出"));
+    } else if (state.values.value("ot04").toInt()) {
+        m_workState->setText(QString::fromUtf8("当前：OT4 输出"));
+    } else {
+        m_workState->setText(QString::fromUtf8("当前：输出关闭"));
+    }
+    const bool hasTemperature = state.values.contains("th1_temp")
+        || state.values.contains("th2_temp") || state.values.contains("th3_temp");
+    m_averageTemp->setText(hasTemperature
+        ? QString::fromUtf8("%1 ℃").arg(averageField(
+              state.values, { "th1_temp", "th2_temp", "th3_temp" }), 0, 'f', 1)
+        : "--.- ℃");
+
     const int ot3 = state.values.value("ot03").toInt();
     const int ot4 = state.values.value("ot04").toInt();
     const QList<QPair<QPushButton *, int>> buttons = { { m_ot3, ot3 }, { m_ot4, ot4 } };
     for (const auto &entry : buttons) {
         entry.first->blockSignals(true);
         entry.first->setChecked(entry.second != 0);
-        entry.first->setEnabled(ready && !locked);
+        entry.first->setEnabled(ready && !locked && !deviceAuto);
         entry.first->setProperty("outputOn", entry.second != 0);
+        entry.first->setProperty("locked", ready && locked);
         const QString output = entry.first == m_ot3 ? "OT3" : "OT4";
         const QString circuit = entry.first == m_ot3
             ? QString::fromUtf8("回路一") : QString::fromUtf8("回路二");
@@ -748,9 +1136,10 @@ void ManualPanel::toggleOutput()
         return;
     const QString field = button->property("outputField").toString();
     const bool controlledOutput = field == "ot03" || field == "ot04";
+    const bool deviceAuto = m_autoDevices.contains(commandKey(currentDevice()));
     const QString highVoltageField = config.highVoltageDetectionMode == "digital"
         ? "hv_input" : "external_voltage";
-    if (!state.online
+    if (!state.online || (controlledOutput && deviceAuto)
         || (controlledOutput
             && (!state.values.contains(highVoltageField)
                 || hasHighVoltage(state.values)))) {
@@ -2799,7 +3188,7 @@ void MainWindow::setupUi()
     sideLayout->addSpacing(28);
 
     const QStringList navTexts = {
-        QString::fromUtf8("手动操作"), QString::fromUtf8("自动运行"),
+        QString::fromUtf8("子板总览"), QString::fromUtf8("子板控制"),
         QString::fromUtf8("参数设置"), QString::fromUtf8("数据浏览")
     };
     for (int i = 0; i < navTexts.size(); ++i) {
@@ -2841,12 +3230,12 @@ void MainWindow::setupUi()
     workspace->addWidget(topBar);
 
     m_pages = new QStackedWidget(root);
+    m_fleetOverview = new FleetOverviewPanel(&m_deviceManager, m_pages);
     m_manualPanel = new ManualPanel(&m_deviceManager, m_pages);
-    m_autoPanel = new AutoPanel(&m_deviceManager, m_pages);
     m_settingsWidget = new SettingsWidget(&m_rotator, m_pages);
     m_historyWidget = new HistoryWidget(&m_historyQuery, &m_deviceManager, m_pages);
+    m_pages->addWidget(m_fleetOverview);
     m_pages->addWidget(m_manualPanel);
-    m_pages->addWidget(m_autoPanel);
     m_pages->addWidget(m_settingsWidget);
     m_pages->addWidget(m_historyWidget);
 
@@ -2865,8 +3254,13 @@ void MainWindow::setupUi()
 
     connect(m_manualPanel, &ManualPanel::writeRequested,
             this, &MainWindow::writeToDevice);
-    connect(m_autoPanel, &AutoPanel::runningChanged,
-            this, &MainWindow::setAutomaticRunning);
+    connect(m_manualPanel, &ManualPanel::runningChanged,
+            this, &MainWindow::setDeviceAutoRunning);
+    connect(m_fleetOverview, &FleetOverviewPanel::deviceActivated,
+            this, [this](const DeviceProfile::DeviceKey &key) {
+        m_manualPanel->setCurrentDevice(key);
+        switchPage(1);
+    });
     connect(m_settingsWidget, &SettingsWidget::settingsSaved,
             this, &MainWindow::onSettingsSaved);
     connect(m_settingsWidget, &SettingsWidget::rescanRequested,
@@ -2920,19 +3314,20 @@ void MainWindow::switchPage(int index)
     if (index < 0 || index >= m_pages->count())
         return;
     const QStringList titles = {
-        QString::fromUtf8("手动操作"), QString::fromUtf8("自动运行"),
+        QString::fromUtf8("子板状态总览"), QString::fromUtf8("子板控制"),
         QString::fromUtf8("参数设置"), QString::fromUtf8("历史数据浏览")
     };
     m_pages->setCurrentIndex(index);
     m_pageTitle->setText(titles.at(index));
     m_navigation.at(index)->setChecked(true);
 
-    if (index == 0) {
-        if (m_autoRunning)
-            setAutomaticRunning(false);
+    if (index == 1) {
         if (!m_highVoltageAlarm)
-            setAllIndicatorLights(0, 1, 0, 0);
-        m_statusBar->setText(QString::fromUtf8("已进入手动模式，子板黄灯点亮"));
+            refreshIndicatorLights();
+        m_statusBar->setText(m_autoDevices.isEmpty()
+            ? QString::fromUtf8("已进入子板控制，可进行手动操作")
+            : QString::fromUtf8("已进入子板控制，自动温控 %1/%2 块运行中")
+                  .arg(m_autoDevices.size()).arg(m_deviceManager.allDevices().size()));
     } else if (index == 3) {
         m_historyWidget->activate();
     } else if (index == 2) {
@@ -2970,48 +3365,65 @@ void MainWindow::writeToDevice(const DeviceProfile::DeviceKey &key,
         return;
     }
     QMap<QString, QVariant> commandFields = fields;
-    addConfiguredSpareOutputs(commandFields, m_deviceManager.device(key).values);
+    addConfiguredSpareOutputs(key, commandFields, m_deviceManager.device(key).values);
     m_scheduler->writeToDevice(key, commandFields);
     m_statusBar->setText(QString::fromUtf8("正在向 ID %1 发送指令…").arg(key.slaveId));
 }
 
-void MainWindow::setAutomaticRunning(bool running)
+void MainWindow::setDeviceAutoRunning(const DeviceProfile::DeviceKey &key,
+                                      bool running)
 {
+    const int keyValue = commandKey(key);
+    const bool online = m_deviceManager.hasDevice(key)
+        && m_deviceManager.device(key).online;
     if (running && m_highVoltageAlarm) {
         m_statusBar->setText(QString::fromUtf8("高压告警未解除，无法启动自动运行"));
-        m_autoPanel->setRunning(false);
+        syncAutoPanels();
         return;
     }
-    if (running && !m_reservedInputInterlocks.isEmpty()) {
+    if (running && m_reservedInputInterlocks.contains(keyValue)) {
         m_statusBar->setText(QString::fromUtf8(
-            "仍有 %1 块子板备用输入联锁，无法启动自动运行")
-            .arg(m_reservedInputInterlocks.size()));
-        m_autoPanel->setRunning(false);
+            "ID %1 备用输入联锁中，无法启动自动温控").arg(key.slaveId));
+        syncAutoPanels();
+        return;
+    }
+    if (running && !online) {
+        m_statusBar->setText(QString::fromUtf8("ID %1 离线，无法启动自动温控")
+                                 .arg(key.slaveId));
+        syncAutoPanels();
+        return;
+    }
+    if (running == m_autoDevices.contains(keyValue)) {
+        syncAutoPanels();
         return;
     }
     if (running) {
-        const QList<DeviceState> devices = m_deviceManager.allDevices();
-        if (devices.isEmpty()) {
-            m_statusBar->setText(QString::fromUtf8("尚未发现子板，无法启动自动运行"));
-            m_autoPanel->setRunning(false);
-            return;
-        }
-    }
-    m_autoRunning = running;
-    m_autoPanel->setRunning(running);
-    m_lastAutoCommands.clear();
-    m_lastAutoCommandTimes.clear();
-    m_pidStates.clear();
-    if (running) {
-        setAllIndicatorLights(1, 0, 0, 0);
-        for (const DeviceState &state : m_deviceManager.allDevices())
-            applyAutomaticControl(state.key);
-        m_statusBar->setText(QString::fromUtf8("自动温控已启动，子板绿灯点亮"));
+        m_autoDevices.insert(keyValue);
+        m_lastAutoCommands.remove(keyValue);
+        m_lastAutoCommandTimes.remove(keyValue);
+        m_pidStates.remove(keyValue);
+        syncAutoPanels();
+        refreshIndicatorLights();
+        applyAutomaticControl(key);
+        m_statusBar->setText(QString::fromUtf8("ID %1 自动温控已启动，该子板绿灯点亮")
+                                 .arg(key.slaveId));
     } else {
-        setAllIndicatorLights(0, 0, 0, 0);
-        m_statusBar->setText(QString::fromUtf8("自动温控已停止"));
+        m_autoDevices.remove(keyValue);
+        m_lastAutoCommands.remove(keyValue);
+        m_lastAutoCommandTimes.remove(keyValue);
+        m_pidStates.remove(keyValue);
+        syncAutoPanels();
+        refreshIndicatorLights();
+        m_statusBar->setText(QString::fromUtf8(
+            "ID %1 自动温控已停止，OT3/OT4 保持当前状态").arg(key.slaveId));
     }
     refreshSystemState();
+}
+
+void MainWindow::syncAutoPanels()
+{
+    m_manualPanel->setAutoDevices(m_autoDevices);
+    m_fleetOverview->setAutoDevices(m_autoDevices);
 }
 
 void MainWindow::onDeviceUpdated(const DeviceProfile::DeviceKey &key)
@@ -3030,7 +3442,7 @@ void MainWindow::onDeviceUpdated(const DeviceProfile::DeviceKey &key)
 
     refreshHighVoltageAlarm();
 
-    if (m_autoRunning && !m_highVoltageAlarm
+    if (m_autoDevices.contains(commandKey(key)) && !m_highVoltageAlarm
         && !m_reservedInputInterlocks.contains(commandKey(key)))
         applyAutomaticControl(key);
     refreshSystemState();
@@ -3067,7 +3479,7 @@ void MainWindow::onWriteCompleted(const DeviceProfile::DeviceKey &key,
 void MainWindow::onSettingsSaved()
 {
     const AppConfig::GeneralConfig &config = AppConfig::instance().general();
-    m_autoPanel->refreshParameters();
+    m_manualPanel->refreshParameters();
     m_logger.setDataPath(config.dataPath);
     m_historyQuery.setDataPath(config.dataPath);
     m_rotator.setDataPath(config.dataPath);
@@ -3087,7 +3499,7 @@ void MainWindow::onSettingsSaved()
         evaluateSensorSelfCheck(state.key, state);
         evaluateReservedInput(state.key, state);
         QMap<QString, QVariant> fields;
-        addConfiguredSpareOutputs(fields, state.values);
+        addConfiguredSpareOutputs(state.key, fields, state.values);
         if (!fields.isEmpty() && m_scheduler)
             m_scheduler->writeToDevice(state.key, fields);
     }
@@ -3107,8 +3519,8 @@ void MainWindow::rescanDevices()
             QString::fromUtf8("⚠  通信未启动，无法扫描"), false);
         return;
     }
-    if (m_autoRunning)
-        setAutomaticRunning(false);
+    m_autoDevices.clear();
+    syncAutoPanels();
     m_scheduler->rescanDevices();
     m_lastAutoCommands.clear();
     m_lastAutoCommandTimes.clear();
@@ -3131,11 +3543,13 @@ void MainWindow::updateClock()
     refreshSystemState();
 }
 
-void MainWindow::addConfiguredSpareOutputs(QMap<QString, QVariant> &fields,
-                                            const QMap<QString, QVariant> &currentValues,
-                                            bool initializeManual) const
+void MainWindow::addConfiguredSpareOutputs(const DeviceProfile::DeviceKey &key,
+                                           QMap<QString, QVariant> &fields,
+                                           const QMap<QString, QVariant> &currentValues,
+                                           bool initializeManual) const
 {
     const AppConfig::GeneralConfig &config = AppConfig::instance().general();
+    const int keyValue = commandKey(key);
     const bool alarm = m_highVoltageAlarm || !m_sensorFaults.isEmpty()
         || !m_reservedInputInterlocks.isEmpty();
     for (int output : { 1, 2, 5, 6 }) {
@@ -3145,7 +3559,7 @@ void MainWindow::addConfiguredSpareOutputs(QMap<QString, QVariant> &fields,
             if (initializeManual)
                 fields[field] = 0;
         } else if (mode == "auto") {
-            fields[field] = m_autoRunning ? 1 : 0;
+            fields[field] = m_autoDevices.contains(keyValue) ? 1 : 0;
         } else if (mode == "alarm") {
             fields[field] = alarm ? 1 : 0;
         } else if (mode == "follow_ot3" || mode == "follow_ot4") {
@@ -3159,34 +3573,30 @@ void MainWindow::addConfiguredSpareOutputs(QMap<QString, QVariant> &fields,
     }
 }
 
-void MainWindow::setAllIndicatorLights(int green, int yellow, int red, int buzzer)
+void MainWindow::refreshIndicatorLights()
 {
-    if (!m_scheduler)
+    if (!m_scheduler || m_highVoltageAlarm)
         return;
-    QMap<QString, QVariant> fields;
-    fields["ot07"] = green;
-    fields["ot08"] = yellow;
-    fields["ot09"] = red;
-    fields["ot10"] = buzzer;
     for (const DeviceState &state : m_deviceManager.allDevices()) {
-        QMap<QString, QVariant> deviceFields = fields;
-        if (!m_highVoltageAlarm
-            && (m_sensorFaults.contains(commandKey(state.key))
-                || m_reservedInputInterlocks.contains(commandKey(state.key)))) {
-            deviceFields["ot07"] = 0;
-            deviceFields["ot08"] = 0;
-            deviceFields["ot09"] = 1;
-            deviceFields["ot10"] = 0;
-        }
-        addConfiguredSpareOutputs(deviceFields, state.values);
-        m_scheduler->writeToDevice(state.key, deviceFields);
+        const int keyValue = commandKey(state.key);
+        const bool fault = m_sensorFaults.contains(keyValue)
+            || m_reservedInputInterlocks.contains(keyValue);
+        const bool green = !fault && m_autoDevices.contains(keyValue);
+        QMap<QString, QVariant> fields;
+        fields["ot07"] = green ? 1 : 0;
+        fields["ot08"] = !green && !fault
+            && m_pages->currentIndex() == 1 ? 1 : 0;
+        fields["ot09"] = fault ? 1 : 0;
+        fields["ot10"] = 0;
+        addConfiguredSpareOutputs(state.key, fields, state.values);
+        m_scheduler->writeToDevice(state.key, fields);
     }
 }
 
 void MainWindow::applyAutomaticControl(const DeviceProfile::DeviceKey &key)
 {
     const int keyValue = commandKey(key);
-    if (!m_autoRunning || m_highVoltageAlarm
+    if (!m_autoDevices.contains(keyValue) || m_highVoltageAlarm
         || m_reservedInputInterlocks.contains(keyValue)
         || !m_deviceManager.hasDevice(key))
         return;
@@ -3321,7 +3731,7 @@ void MainWindow::applyAutomaticControl(const DeviceProfile::DeviceKey &key)
     QMap<QString, QVariant> fields;
     fields["ot03"] = control.ot3;
     fields["ot04"] = control.ot4;
-    addConfiguredSpareOutputs(fields, state.values);
+    addConfiguredSpareOutputs(key, fields, state.values);
     m_scheduler->writeToDevice(key, fields);
 }
 
@@ -3363,7 +3773,7 @@ void MainWindow::enterSensorFault(const DeviceProfile::DeviceKey &key,
     if (m_scheduler) {
         QMap<QString, QVariant> fields;
         fields["ot09"] = 1;
-        addConfiguredSpareOutputs(fields, m_deviceManager.device(key).values);
+        addConfiguredSpareOutputs(key, fields, m_deviceManager.device(key).values);
         m_scheduler->writeToDevice(key, fields);
     }
     m_statusBar->setText(QString::fromUtf8("ID %1 温湿度自检异常：%2")
@@ -3378,11 +3788,12 @@ void MainWindow::leaveSensorFault(const DeviceProfile::DeviceKey &key)
     m_sensorRecoveryCounts.remove(keyValue);
     if (m_scheduler && !m_highVoltageAlarm) {
         QMap<QString, QVariant> fields;
-        fields["ot07"] = m_autoRunning ? 1 : 0;
-        fields["ot08"] = !m_autoRunning && m_pages->currentIndex() == 0 ? 1 : 0;
+        fields["ot07"] = m_autoDevices.contains(keyValue) ? 1 : 0;
+        fields["ot08"] = !m_autoDevices.contains(keyValue)
+            && m_pages->currentIndex() == 1 ? 1 : 0;
         fields["ot09"] = m_reservedInputInterlocks.contains(keyValue) ? 1 : 0;
         fields["ot10"] = 0;
-        addConfiguredSpareOutputs(fields, m_deviceManager.device(key).values);
+        addConfiguredSpareOutputs(key, fields, m_deviceManager.device(key).values);
         m_scheduler->writeToDevice(key, fields);
     }
     m_statusBar->setText(QString::fromUtf8(
@@ -3419,14 +3830,12 @@ void MainWindow::enterReservedInputInterlock(const DeviceProfile::DeviceKey &key
     const QString level = value == 0 ? QString::fromUtf8("低电平")
                                      : QString::fromUtf8("高电平");
     m_reservedInputInterlocks[keyValue] = level;
-    if (m_autoRunning) {
-        m_autoRunning = false;
-        m_autoPanel->setRunning(false);
-    }
-    m_lastAutoCommands.clear();
-    m_lastAutoCommandTimes.clear();
-    m_pidStates.clear();
-    stopAllControlledOutputs();
+    const bool wasAuto = m_autoDevices.remove(keyValue);
+    m_lastAutoCommands.remove(keyValue);
+    m_lastAutoCommandTimes.remove(keyValue);
+    m_pidStates.remove(keyValue);
+    if (wasAuto)
+        syncAutoPanels();
     if (m_scheduler) {
         QMap<QString, QVariant> fields;
         fields["ot03"] = 0;
@@ -3435,7 +3844,7 @@ void MainWindow::enterReservedInputInterlock(const DeviceProfile::DeviceKey &key
         fields["ot08"] = 0;
         fields["ot09"] = 1;
         fields["ot10"] = 0;
-        addConfiguredSpareOutputs(fields, m_deviceManager.device(key).values);
+        addConfiguredSpareOutputs(key, fields, m_deviceManager.device(key).values);
         m_scheduler->writeToDevice(key, fields);
     }
     m_statusBar->setText(QString::fromUtf8(
@@ -3444,7 +3853,7 @@ void MainWindow::enterReservedInputInterlock(const DeviceProfile::DeviceKey &key
     QTimer::singleShot(0, this, [this, key, level]() {
         QMessageBox::critical(this, QString::fromUtf8("备用输入联锁"),
             QString::fromUtf8("端口 %1 / 子板 ID %2 的备用输入为%3。\n\n"
-                              "已停止自动温控、关闭 OT3/OT4，并点亮该子板红灯。")
+                              "已停止该子板自动温控、关闭 OT3/OT4，并点亮红灯。")
                 .arg(key.portIndex + 1).arg(key.slaveId).arg(level));
     });
 }
@@ -3456,39 +3865,29 @@ void MainWindow::leaveReservedInputInterlock(const DeviceProfile::DeviceKey &key
         return;
     if (m_scheduler && !m_highVoltageAlarm) {
         QMap<QString, QVariant> fields;
-        fields["ot07"] = m_autoRunning ? 1 : 0;
-        fields["ot08"] = !m_autoRunning && m_pages->currentIndex() == 0 ? 1 : 0;
+        fields["ot07"] = m_autoDevices.contains(keyValue) ? 1 : 0;
+        fields["ot08"] = !m_autoDevices.contains(keyValue)
+            && m_pages->currentIndex() == 1 ? 1 : 0;
         fields["ot09"] = m_sensorFaults.contains(keyValue) ? 1 : 0;
         fields["ot10"] = 0;
-        addConfiguredSpareOutputs(fields, m_deviceManager.device(key).values);
+        addConfiguredSpareOutputs(key, fields, m_deviceManager.device(key).values);
         m_scheduler->writeToDevice(key, fields);
     }
     m_statusBar->setText(QString::fromUtf8(
         "ID %1 备用输入联锁已解除，请确认现场后重新启动").arg(key.slaveId));
 }
 
-void MainWindow::stopAllControlledOutputs()
-{
-    if (!m_scheduler)
-        return;
-    QMap<QString, QVariant> fields;
-    fields["ot03"] = 0;
-    fields["ot04"] = 0;
-    addConfiguredSpareOutputs(fields);
-    for (const DeviceState &state : m_deviceManager.allDevices())
-        m_scheduler->writeToDevice(state.key, fields);
-}
-
 void MainWindow::initializeSafeOutputs(const DeviceProfile::DeviceKey &key)
 {
     if (!m_scheduler)
         return;
-    m_initializedDevices.insert(commandKey(key));
+    const int keyValue = commandKey(key);
+    m_initializedDevices.insert(keyValue);
     QMap<QString, QVariant> fields;
-    addConfiguredSpareOutputs(fields, m_deviceManager.device(key).values, true);
-    fields["ot07"] = !m_highVoltageAlarm && m_autoRunning ? 1 : 0;
-    fields["ot08"] = !m_highVoltageAlarm && !m_autoRunning
-        && m_pages->currentIndex() == 0 ? 1 : 0;
+    addConfiguredSpareOutputs(key, fields, m_deviceManager.device(key).values, true);
+    fields["ot07"] = !m_highVoltageAlarm && m_autoDevices.contains(keyValue) ? 1 : 0;
+    fields["ot08"] = !m_highVoltageAlarm && !m_autoDevices.contains(keyValue)
+        && m_pages->currentIndex() == 1 ? 1 : 0;
     fields["ot09"] = m_highVoltageAlarm ? 1 : 0;
     fields["ot10"] = m_highVoltageAlarm ? 1 : 0;
     m_scheduler->writeToDevice(key, fields);
@@ -3497,22 +3896,23 @@ void MainWindow::initializeSafeOutputs(const DeviceProfile::DeviceKey &key)
 void MainWindow::enterHighVoltageAlarm()
 {
     m_highVoltageAlarm = true;
-    m_autoRunning = false;
-    m_autoPanel->setRunning(false);
+    m_autoDevices.clear();
+    syncAutoPanels();
     m_lastAutoCommands.clear();
     m_lastAutoCommandTimes.clear();
     m_pidStates.clear();
     if (m_scheduler) {
-        QMap<QString, QVariant> fields;
-        fields["ot03"] = 0;
-        fields["ot04"] = 0;
-        fields["ot07"] = 0;
-        fields["ot08"] = 0;
-        fields["ot09"] = 1;
-        fields["ot10"] = 1;
-        addConfiguredSpareOutputs(fields);
-        for (const DeviceState &state : m_deviceManager.allDevices())
+        for (const DeviceState &state : m_deviceManager.allDevices()) {
+            QMap<QString, QVariant> fields;
+            fields["ot03"] = 0;
+            fields["ot04"] = 0;
+            fields["ot07"] = 0;
+            fields["ot08"] = 0;
+            fields["ot09"] = 1;
+            fields["ot10"] = 1;
+            addConfiguredSpareOutputs(state.key, fields, state.values);
             m_scheduler->writeToDevice(state.key, fields);
+        }
     }
     refreshSystemState();
     m_statusBar->setText(QString::fromUtf8("高压带电：已切断全部 OT3 / OT4 并启动声光告警"));
@@ -3521,7 +3921,7 @@ void MainWindow::enterHighVoltageAlarm()
 void MainWindow::leaveHighVoltageAlarm()
 {
     m_highVoltageAlarm = false;
-    setAllIndicatorLights(0, m_pages->currentIndex() == 0 ? 1 : 0, 0, 0);
+    refreshIndicatorLights();
     refreshSystemState();
     m_statusBar->setText(QString::fromUtf8("高压告警已解除，请确认现场安全后继续操作"));
 }
@@ -3531,11 +3931,22 @@ void MainWindow::refreshSystemState()
     const QList<DeviceState> devices = m_deviceManager.allDevices();
     int checkedCount = 0;
     int onlineCount = 0;
+    QStringList highVoltageDevices;
+    bool allSensorDataHealthy = !devices.isEmpty();
     for (const DeviceState &state : devices) {
         if (state.lastUpdate.isValid())
             ++checkedCount;
         if (state.online)
             ++onlineCount;
+        if (hasHighVoltage(state.values)) {
+            highVoltageDevices.append(QString::fromUtf8("%1口-ID %2")
+                                          .arg(state.key.portIndex + 1)
+                                          .arg(state.key.slaveId));
+        }
+        if (!state.online
+            || !m_sensorHealthyDevices.contains(commandKey(state.key))) {
+            allSensorDataHealthy = false;
+        }
     }
 
     bool selfCheckAlarm = false;
@@ -3551,16 +3962,16 @@ void MainWindow::refreshSystemState()
             .arg(m_sensorFaults.size())
             .arg(qMax(0, kSensorRecoverySamples - recoveryProgress)));
         selfCheckAlarm = true;
+    } else if (allSensorDataHealthy) {
+        m_selfCheckNotice->setText(QString::fromUtf8("✓ 自检正常"));
+        selfCheckHealthy = true;
     } else if (elapsed < kSelfCheckSeconds) {
         m_selfCheckNotice->setText(QString::fromUtf8("自检倒计时 %1 秒")
             .arg(kSelfCheckSeconds - elapsed));
     } else if (devices.isEmpty()) {
         m_selfCheckNotice->setText(QString::fromUtf8("自检等待子板"));
-    } else if (m_sensorHealthyDevices.size() < devices.size()) {
-        m_selfCheckNotice->setText(QString::fromUtf8("自检数据未齐"));
     } else {
-        m_selfCheckNotice->setText(QString::fromUtf8("✓ 自检正常"));
-        selfCheckHealthy = true;
+        m_selfCheckNotice->setText(QString::fromUtf8("自检数据未齐"));
     }
     m_selfCheckNotice->setProperty("alarm", selfCheckAlarm);
     m_selfCheckNotice->setProperty("healthy", selfCheckHealthy);
@@ -3568,8 +3979,13 @@ void MainWindow::refreshSystemState()
 
     bool alarm = false;
     bool neutral = false;
+    m_systemState->setToolTip(QString());
     if (m_highVoltageAlarm) {
-        m_systemState->setText(QString::fromUtf8("⚠  高压告警"));
+        const QString alarmText = QString::fromUtf8("⚠ 高压：%1")
+                                      .arg(highVoltageDevices.join(
+                                          QString::fromUtf8("、")));
+        m_systemState->setText(alarmText);
+        m_systemState->setToolTip(alarmText);
         alarm = true;
     } else if (!m_configError.isEmpty()) {
         m_systemState->setText(QString::fromUtf8("⚠  配置异常"));
@@ -3594,8 +4010,9 @@ void MainWindow::refreshSystemState()
         m_systemState->setText(QString::fromUtf8("⚠  子板在线 %1/%2")
                                    .arg(onlineCount).arg(devices.size()));
         alarm = true;
-    } else if (m_autoRunning) {
-        m_systemState->setText(QString::fromUtf8("●  自动运行"));
+    } else if (!m_autoDevices.isEmpty()) {
+        m_systemState->setText(QString::fromUtf8("●  自动运行 %1/%2 块")
+                                   .arg(m_autoDevices.size()).arg(devices.size()));
     } else {
         m_systemState->setText(QString::fromUtf8("●  系统正常"));
     }
