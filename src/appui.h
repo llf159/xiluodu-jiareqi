@@ -242,7 +242,7 @@ private:
     QComboBox *m_highVoltageDigitalTrigger = nullptr;
     QDoubleSpinBox *m_highVoltageThreshold = nullptr;
     QSpinBox *m_relaySwitchInterval = nullptr;
-    QSpinBox *m_recordInterval = nullptr;
+    QSpinBox *m_pollInterval = nullptr;
     QSpinBox *m_maxStorageGB = nullptr;
     QSpinBox *m_deleteAge = nullptr;
     QComboBox *m_deleteAgeUnit = nullptr;

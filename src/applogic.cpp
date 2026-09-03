@@ -146,7 +146,6 @@ bool AppConfig::load(const QString &iniPath)
                m_general.pidDualStagePercent, 100.0);
     m_general.highVoltageThreshold = ini.value("highVoltageThreshold", 1.0).toDouble();
     m_general.relaySwitchIntervalSec = ini.value("relaySwitchIntervalSec", 10).toInt();
-    m_general.recordIntervalSec = ini.value("recordIntervalSec", 1).toInt();
 
     m_ports.clear();
     for (int i = 0; i < 2; ++i) {
@@ -223,7 +222,7 @@ bool AppConfig::save(const QString &iniPath) const
     ini.setValue("highVoltageDigitalTrigger", m_general.highVoltageDigitalTrigger);
     ini.setValue("highVoltageThreshold", m_general.highVoltageThreshold);
     ini.setValue("relaySwitchIntervalSec", m_general.relaySwitchIntervalSec);
-    ini.setValue("recordIntervalSec", m_general.recordIntervalSec);
+    ini.remove("recordIntervalSec");
 
     for (int i = 0; i < m_ports.size(); ++i) {
         const PortConfig &p = m_ports.at(i);
@@ -838,6 +837,17 @@ void PollScheduler::stop()
     m_ports.clear();
 }
 
+void PollScheduler::applyPollInterval(int intervalMs)
+{
+    const int effectiveIntervalMs = qMax(1, intervalMs);
+    for (auto it = m_ports.begin(); it != m_ports.end(); ++it) {
+        if (it.value().worker)
+            QMetaObject::invokeMethod(it.value().worker, "startPolling",
+                                      Qt::QueuedConnection,
+                                      Q_ARG(int, effectiveIntervalMs));
+    }
+}
+
 void PollScheduler::refreshPollTasks()
 {
     const QList<DeviceState> selected = m_deviceMgr->selectedDevices();
@@ -863,7 +873,6 @@ void PollScheduler::refreshPollTasks()
 
 void PollScheduler::rescanDevices()
 {
-    m_lastLogTimes.clear();
     m_deviceMgr->clearDiscoveredDevices();
     refreshPollTasks();
     for (auto it = m_ports.begin(); it != m_ports.end(); ++it) {
@@ -943,14 +952,9 @@ void PollScheduler::onDeviceDataReady(DeviceProfile::DeviceKey key,
     if (discovered && m_deviceMgr->hasDevice(key))
         refreshPollTasks();
 
-    const QDateTime now = QDateTime::currentDateTime();
-    const int recordInterval = qMax(1, AppConfig::instance().general().recordIntervalSec);
-    if (online && !values.isEmpty() && m_logger
-        && (!m_lastLogTimes.contains(key)
-            || m_lastLogTimes.value(key).secsTo(now) >= recordInterval)) {
+    if (online && !values.isEmpty() && m_logger) {
         const DeviceState ds = m_deviceMgr->device(key);
         m_logger->appendRecord(key, ds.name, ds.type, values);
-        m_lastLogTimes[key] = now;
     }
 }
 

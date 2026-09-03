@@ -78,7 +78,6 @@ public:
         int highVoltageDigitalTrigger = 1;
         double highVoltageThreshold = 1.0;
         int relaySwitchIntervalSec = 10;
-        int recordIntervalSec = 1;
     };
 
     static AppConfig &instance();
@@ -303,6 +302,7 @@ public:
     bool start();
     void stop();
     void refreshPollTasks();
+    void applyPollInterval(int intervalMs);
     void rescanDevices();
 
 public slots:
@@ -332,7 +332,6 @@ private:
     DeviceManager *m_deviceMgr = nullptr;
     DataLogger *m_logger = nullptr;
     QHash<int, PortHandle> m_ports;
-    QHash<DeviceProfile::DeviceKey, QDateTime> m_lastLogTimes;
 };
 
 #endif // APPLOGIC_H

@@ -330,6 +330,7 @@ QString applicationStyleSheet(const QString &themeName)
     )");
     const QString lowLight = QString::fromUtf8(R"(
         QMainWindow, QWidget#appRoot { background: #10181e; color: #eef3f5; }
+        QLabel { color: #eef3f5; }
         QFrame#sideBar { background: #080d11; }
         QLabel#brandTitle { color: #f4f8fa; }
         QPushButton#navButton { color: #b8c5cc; }
@@ -349,6 +350,7 @@ QString applicationStyleSheet(const QString &themeName)
         QComboBox:focus { border-color: #55b9e8; }
         QComboBox QAbstractItemView { color: #f1f5f7; background: #101a21;
             border-color: #72838d; selection-background-color: #287eaa; }
+        QScrollArea, QScrollArea > QWidget > QWidget { background: #10181e; }
         QPushButton#primaryButton { color: white; background: #287eaa; border-color: #55b9e8; }
         QPushButton#primaryButton:hover { background: #3293c2; }
         QPushButton#secondaryButton { color: #eef3f5; background: #17232b;
@@ -2123,20 +2125,20 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
     storageLayout->setSpacing(7);
     auto *storageTop = new QHBoxLayout;
     auto *storageText = new QVBoxLayout;
-    auto *storageTitle = new QLabel(QString::fromUtf8("数据文件与存储空间"), storageCard);
+    auto *storageTitle = new QLabel(QString::fromUtf8("数据采集与存储空间"), storageCard);
     storageTitle->setObjectName("sectionTitle");
     storageText->addWidget(storageTitle);
     auto *storageHint = new QLabel(
-        QString::fromUtf8("CSV 在日志容量上限内全部保留，也可按时间长度手动清理"), storageCard);
+        QString::fromUtf8("每次有效轮询写入一条 CSV，也可按时间长度手动清理"), storageCard);
     storageHint->setObjectName("mutedText");
     storageText->addWidget(storageHint);
     storageTop->addLayout(storageText, 1);
-    storageTop->addWidget(new QLabel(QString::fromUtf8("记录周期"), storageCard));
-    m_recordInterval = new QSpinBox(storageCard);
-    m_recordInterval->setRange(1, 3600);
-    m_recordInterval->setSuffix(QString::fromUtf8(" 秒"));
-    m_recordInterval->setValue(config.recordIntervalSec);
-    storageTop->addLayout(makeIntegerAdjustment(m_recordInterval, storageCard));
+    storageTop->addWidget(new QLabel(QString::fromUtf8("轮询周期"), storageCard));
+    m_pollInterval = new QSpinBox(storageCard);
+    m_pollInterval->setRange(1, 3600);
+    m_pollInterval->setSuffix(QString::fromUtf8(" 秒"));
+    m_pollInterval->setValue(qBound(1, config.pollIntervalMs / 1000, 3600));
+    storageTop->addLayout(makeIntegerAdjustment(m_pollInterval, storageCard));
     storageLayout->addLayout(storageTop);
 
     auto *storagePolicy = new QHBoxLayout;
@@ -2259,7 +2261,7 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
         m_dewPointDualStage, m_dewPointHysteresis,
         m_humidityTemperatureLimit, condensationOrder,
         m_highVoltageDetectionMode, m_highVoltageDigitalTrigger,
-        m_highVoltageThreshold, m_displayTheme, m_recordInterval, m_maxStorageGB,
+        m_highVoltageThreshold, m_displayTheme, m_pollInterval, m_maxStorageGB,
         m_deleteAge, m_deleteAgeUnit, m_reservedInputMode,
         m_relaySwitchInterval
     };
@@ -2549,7 +2551,7 @@ SettingsWidget::SettingsWidget(StorageRotator *rotator, QWidget *parent)
         connect(input, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, [clearFeedback](double) { clearFeedback(); });
     }
-    for (QSpinBox *input : { m_recordInterval, m_relaySwitchInterval,
+    for (QSpinBox *input : { m_pollInterval, m_relaySwitchInterval,
                              m_maxStorageGB }) {
         connect(input, QOverload<int>::of(&QSpinBox::valueChanged),
                 this, [clearFeedback](int) { clearFeedback(); });
@@ -2658,7 +2660,7 @@ void SettingsWidget::saveSettings()
         m_highVoltageDigitalTrigger->currentData().toInt();
     config.general().highVoltageThreshold = m_highVoltageThreshold->value();
     config.general().relaySwitchIntervalSec = m_relaySwitchInterval->value();
-    config.general().recordIntervalSec = m_recordInterval->value();
+    config.general().pollIntervalMs = m_pollInterval->value() * 1000;
     config.general().maxStorageMB = m_maxStorageGB->value() * 1024;
     config.general().spareOt01Mode = m_spareOutputModes.value(1)->currentData().toString();
     config.general().spareOt02Mode = m_spareOutputModes.value(2)->currentData().toString();
@@ -3071,6 +3073,8 @@ void MainWindow::onSettingsSaved()
     m_rotator.setDataPath(config.dataPath);
     m_rotator.setMaxStorageMB(config.maxStorageMB);
     m_settingsWidget->refreshStorageInfo();
+    if (m_scheduler)
+        m_scheduler->applyPollInterval(config.pollIntervalMs);
     m_manualPanel->refreshSettings();
     m_statusBar->setText(QString::fromUtf8("参数已保存并应用"));
     m_lastAutoCommands.clear();
